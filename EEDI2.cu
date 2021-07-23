@@ -25,14 +25,17 @@ class CUDAError : public std::runtime_error {
 
 struct EEDI2Param {
   uint32_t d_pitch;
+  uint32_t nt4, nt7, nt8, nt13, nt19;
   uint16_t mthresh, lthresh, vthresh;
-  uint16_t nt4, nt7, nt8, nt13, nt19;
   uint16_t width, height;
   uint8_t field, fieldS;
   uint8_t estr, dstr, maxd;
-  uint8_t map, pp, plane;
+  uint8_t map, pp, plane, subSampling;
 };
 __constant__ char d_buf[sizeof(EEDI2Param)];
+__constant__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10,
+                               11, 11, 12, 12, 12, 12, 12, 12, 12, 12, 12,
+                               12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};
 
 template <typename T> struct EEDI2Instance {
   VSNodeRef *node;
@@ -93,7 +96,7 @@ template <typename T> struct EEDI2Instance {
     param.map = narrow<uint8_t>(propGetIntDefault("map", 0));
     param.pp = narrow<uint8_t>(propGetIntDefault("pp", 1));
 
-    auto nt = narrow<uint16_t>(propGetIntDefault("nt", 50));
+    uint16_t nt = narrow<uint8_t>(propGetIntDefault("nt", 50));
 
     if (param.field > 3)
       throw invalid_arg("field must be 0, 1, 2 or 3");
@@ -116,6 +119,7 @@ template <typename T> struct EEDI2Instance {
     param.mthresh *= param.mthresh;
     param.vthresh *= 81;
 
+    nt <<= sizeof(T) * 8 - 8;
     param.nt4 = nt * 4;
     param.nt7 = nt * 7;
     param.nt8 = nt * 8;
@@ -137,7 +141,8 @@ template <typename T> struct EEDI2Instance {
                              vi->height * numMem));
     auto d_pitch = param.d_pitch = static_cast<uint32_t>(pitch);
     for (size_t i = 1; i < numMem; ++i)
-      mem[i] = mem[i - 1] + d_pitch * vi->height;
+      mem[i] = reinterpret_cast<T *>(reinterpret_cast<char *>(mem[i - 1]) +
+                                     d_pitch * vi->height);
   }
 
   VSFrameRef *getFrame(int n, VSFrameContext *frameCtx, VSCore *core,
@@ -152,7 +157,7 @@ template <typename T> struct EEDI2Instance {
                                           src_frame, core);
 
     auto d_src = src;
-    auto d_dst = msk;
+    auto d_dst = dst;
     auto d_pitch = param.d_pitch;
 
     for (int plane = 0; plane < vi->format->numPlanes; ++plane) {
@@ -163,10 +168,12 @@ template <typename T> struct EEDI2Instance {
       auto h_src = vsapi->getReadPtr(src_frame, plane);
       auto h_dst = vsapi->getWritePtr(dst_frame, plane);
 
-      param.field = field;
-      param.plane = plane;
-      param.width = width;
-      param.height = height;
+      param.field = static_cast<uint8_t>(field);
+      param.plane = static_cast<uint8_t>(plane);
+      param.width = static_cast<uint16_t>(width);
+      param.height = static_cast<uint16_t>(height);
+      param.subSampling =
+          static_cast<uint8_t>(plane ? vi->format->subSamplingW : 0);
 
       try_cuda(cudaMemcpy2DAsync(d_src, d_pitch, h_src, h_pitch, width_bytes,
                                  height, cudaMemcpyHostToDevice, stream));
@@ -181,6 +188,12 @@ template <typename T> struct EEDI2Instance {
       dilate<<<grids, blocks, 0, stream>>>(tmp, msk);
       erode<<<grids, blocks, 0, stream>>>(msk, tmp);
       removeSmallHorzGaps<<<grids, blocks, 0, stream>>>(tmp, msk);
+      if (param.map != 1) {
+        calcDirections<<<grids, blocks, 0, stream>>>(src, msk, tmp);
+        filterDirMap<<<grids, blocks, 0, stream>>>(msk, tmp, dst);
+        expandDirMap<<<grids, blocks, 0, stream>>>(msk, dst, tmp);
+        filterMap<<<grids, blocks, 0, stream>>>(msk, tmp, dst);
+      }
 
       try_cuda(cudaMemcpy2DAsync(h_dst, h_pitch, d_dst, d_pitch, width_bytes,
                                  height, cudaMemcpyDeviceToHost, stream));
@@ -197,7 +210,10 @@ template <typename T> struct EEDI2Instance {
                  x = threadIdx.x + blockIdx.x * blockDim.x,                    \
                  y = threadIdx.y + blockIdx.y * blockDim.y;                    \
   constexpr T shift = sizeof(T) * 8 - 8, peak = std::numeric_limits<T>::max(), \
-              ten = 10 << shift
+              ten = 10 << shift, twleve = 12 << shift;                         \
+  constexpr T shift2 = shift + 2, neutral = peak / 2;                          \
+  if (x >= width || y >= height)                                               \
+  return
 
 #define bounds_check3(value, lower, upper)                                     \
   if ((value) < (lower) || (value) >= (upper))                                 \
@@ -208,10 +224,15 @@ template <typename T> struct EEDI2Instance {
 #define lineOff(p, off) ((p) + stride * (y + (off)))
 #define point(p) ((p)[stride * y + x])
 
+#define CMPSWAP(arr, i, j)                                                     \
+  if (arr[i] > arr[j]) {                                                       \
+    auto t = arr[i];                                                           \
+    arr[i] = arr[j];                                                           \
+    arr[j] = t;                                                                \
+  }
+
 template <typename T> __global__ void buildEdgeMask(const T *src, T *dst) {
   setup_kernel;
-  bounds_check3(x, 1, width - 1);
-  bounds_check3(y, 1, height - 1);
 
   auto srcp = line(src);
   auto srcpp = lineOff(src, -1);
@@ -219,6 +240,9 @@ template <typename T> __global__ void buildEdgeMask(const T *src, T *dst) {
   auto &out = point(dst);
 
   out = 0;
+
+  bounds_check3(x, 1, width - 1);
+  bounds_check3(y, 1, height - 1);
 
   if ((std::abs(srcpp[x] - srcp[x]) < ten &&
        std::abs(srcp[x] - srcpn[x]) < ten &&
@@ -266,8 +290,6 @@ template <typename T> __global__ void buildEdgeMask(const T *src, T *dst) {
 
 template <typename T> __global__ void erode(const T *msk, T *dst) {
   setup_kernel;
-  bounds_check3(x, 1, width - 1);
-  bounds_check3(y, 1, height - 1);
 
   auto mskp = line(msk);
   auto mskpp = lineOff(msk, -1);
@@ -275,6 +297,9 @@ template <typename T> __global__ void erode(const T *msk, T *dst) {
   auto &out = point(dst);
 
   out = mskp[x];
+
+  bounds_check3(x, 1, width - 1);
+  bounds_check3(y, 1, height - 1);
 
   if (mskp[x] != peak)
     return;
@@ -304,8 +329,6 @@ template <typename T> __global__ void erode(const T *msk, T *dst) {
 
 template <typename T> __global__ void dilate(const T *msk, T *dst) {
   setup_kernel;
-  bounds_check3(x, 1, width - 1);
-  bounds_check3(y, 1, height - 1);
 
   auto mskp = line(msk);
   auto mskpp = lineOff(msk, -1);
@@ -313,6 +336,9 @@ template <typename T> __global__ void dilate(const T *msk, T *dst) {
   auto &out = point(dst);
 
   out = mskp[x];
+
+  bounds_check3(x, 1, width - 1);
+  bounds_check3(y, 1, height - 1);
 
   if (mskp[x] != 0)
     return;
@@ -343,13 +369,14 @@ template <typename T> __global__ void dilate(const T *msk, T *dst) {
 template <typename T>
 __global__ void removeSmallHorzGaps(const T *msk, T *dst) {
   setup_kernel;
-  bounds_check3(x, 3, width - 3);
-  bounds_check3(y, 1, height - 1);
 
   auto mskp = line(msk);
   auto &out = point(dst);
 
   out = mskp[x];
+
+  bounds_check3(x, 3, width - 3);
+  bounds_check3(y, 1, height - 1);
 
   if (mskp[x]) {
     if (mskp[x - 3] || mskp[x - 2] || mskp[x - 1] || mskp[x + 1] ||
@@ -360,6 +387,415 @@ __global__ void removeSmallHorzGaps(const T *msk, T *dst) {
     if ((mskp[x + 1] && (mskp[x - 1] || mskp[x - 2] || mskp[x - 3])) ||
         (mskp[x + 2] && (mskp[x - 1] || mskp[x - 2])) ||
         (mskp[x + 3] && mskp[x - 1]))
+      out = peak;
+  }
+}
+
+template <typename T>
+__global__ void calcDirections(const T *src, const T *msk, T *dst) {
+  setup_kernel;
+
+  auto srcp = line(src);
+  auto mskp = line(msk);
+  auto src2p = lineOff(src, -2);
+  auto srcpp = lineOff(src, -1);
+  auto srcpn = lineOff(src, 1);
+  auto src2n = lineOff(src, 2);
+  auto mskpp = lineOff(msk, -1);
+  auto mskpn = lineOff(msk, 1);
+  auto &out = point(dst);
+
+  out = peak;
+
+  bounds_check3(x, 1, width - 1);
+  bounds_check3(y, 1, height - 1);
+
+  const int maxd = d->maxd >> d->subSampling;
+
+  if (mskp[x] != peak || (mskp[x - 1] != peak && mskp[x + 1] != peak))
+    return;
+
+  const int uStart = std::max(-x + 1, -maxd);
+  const int uStop = std::min(width - 2 - x, maxd);
+  const unsigned min0 =
+      std::abs(srcp[x] - srcpn[x]) + std::abs(srcp[x] - srcpp[x]);
+  unsigned minA = std::min(d->nt19, min0 * 9);
+  unsigned minB = std::min(d->nt13, min0 * 6);
+  unsigned minC = minA;
+  unsigned minD = minB;
+  unsigned minE = minB;
+  int dirA = -5000, dirB = -5000, dirC = -5000, dirD = -5000, dirE = -5000;
+
+  for (int u = uStart; u <= uStop; u++) {
+    if ((y == 1 || mskpp[x - 1 + u] == peak || mskpp[x + u] == peak ||
+         mskpp[x + 1 + u] == peak) &&
+        (y == height - 2 || mskpn[x - 1 - u] == peak || mskpn[x - u] == peak ||
+         mskpn[x + 1 - u] == peak)) {
+      const unsigned diffsn = std::abs(srcp[x - 1] - srcpn[x - 1 - u]) +
+                              std::abs(srcp[x] - srcpn[x - u]) +
+                              std::abs(srcp[x + 1] - srcpn[x + 1 - u]);
+      const unsigned diffsp = std::abs(srcp[x - 1] - srcpp[x - 1 + u]) +
+                              std::abs(srcp[x] - srcpp[x + u]) +
+                              std::abs(srcp[x + 1] - srcpp[x + 1 + u]);
+      const unsigned diffps = std::abs(srcpp[x - 1] - srcp[x - 1 - u]) +
+                              std::abs(srcpp[x] - srcp[x - u]) +
+                              std::abs(srcpp[x + 1] - srcp[x + 1 - u]);
+      const unsigned diffns = std::abs(srcpn[x - 1] - srcp[x - 1 + u]) +
+                              std::abs(srcpn[x] - srcp[x + u]) +
+                              std::abs(srcpn[x + 1] - srcp[x + 1 + u]);
+      const unsigned diff = diffsn + diffsp + diffps + diffns;
+      unsigned diffD = diffsp + diffns;
+      unsigned diffE = diffsn + diffps;
+
+      if (diff < minB) {
+        dirB = u;
+        minB = diff;
+      }
+
+      if (y > 1) {
+        const unsigned diff2pp = std::abs(src2p[x - 1] - srcpp[x - 1 - u]) +
+                                 std::abs(src2p[x] - srcpp[x - u]) +
+                                 std::abs(src2p[x + 1] - srcpp[x + 1 - u]);
+        const unsigned diffp2p = std::abs(srcpp[x - 1] - src2p[x - 1 + u]) +
+                                 std::abs(srcpp[x] - src2p[x + u]) +
+                                 std::abs(srcpp[x + 1] - src2p[x + 1 + u]);
+        const unsigned diffA = diff + diff2pp + diffp2p;
+        diffD += diffp2p;
+        diffE += diff2pp;
+
+        if (diffA < minA) {
+          dirA = u;
+          minA = diffA;
+        }
+      }
+
+      if (y < height - 2) {
+        const unsigned diff2nn = std::abs(src2n[x - 1] - srcpn[x - 1 + u]) +
+                                 std::abs(src2n[x] - srcpn[x + u]) +
+                                 std::abs(src2n[x + 1] - srcpn[x + 1 + u]);
+        const unsigned diffn2n = std::abs(srcpn[x - 1] - src2n[x - 1 - u]) +
+                                 std::abs(srcpn[x] - src2n[x - u]) +
+                                 std::abs(srcpn[x + 1] - src2n[x + 1 - u]);
+        const unsigned diffC = diff + diff2nn + diffn2n;
+        diffD += diff2nn;
+        diffE += diffn2n;
+
+        if (diffC < minC) {
+          dirC = u;
+          minC = diffC;
+        }
+      }
+
+      if (diffD < minD) {
+        dirD = u;
+        minD = diffD;
+      }
+
+      if (diffE < minE) {
+        dirE = u;
+        minE = diffE;
+      }
+    }
+  }
+
+  int order[5];
+  unsigned k = 0;
+
+  if (dirA != -5000)
+    order[k++] = dirA;
+  if (dirB != -5000)
+    order[k++] = dirB;
+  if (dirC != -5000)
+    order[k++] = dirC;
+  if (dirD != -5000)
+    order[k++] = dirD;
+  if (dirE != -5000)
+    order[k++] = dirE;
+
+  for (auto t = k; t < 5; ++t)
+    order[t] = std::numeric_limits<int>::max();
+
+  if (k > 1) {
+    CMPSWAP(order, 0, 1);
+    CMPSWAP(order, 3, 4);
+    CMPSWAP(order, 2, 4);
+    CMPSWAP(order, 2, 3);
+    CMPSWAP(order, 0, 3);
+    CMPSWAP(order, 0, 2);
+    CMPSWAP(order, 1, 4);
+    CMPSWAP(order, 1, 3);
+    CMPSWAP(order, 1, 2);
+
+    const int mid =
+        (k & 1) ? order[k / 2] : (order[(k - 1) / 2] + order[k / 2] + 1) / 2;
+    const int lim = std::max(limlut[std::abs(mid)] / 4, 2);
+    int sum = 0;
+    unsigned count = 0;
+
+    for (unsigned i = 0; i < k; i++) {
+      if (std::abs(order[i] - mid) <= lim) {
+        sum += order[i];
+        count++;
+      }
+    }
+
+    out = (count > 1)
+              ? neutral + (static_cast<int>(static_cast<float>(sum) / count)
+                           << shift2)
+              : neutral;
+  } else {
+    out = neutral;
+  }
+}
+
+template <typename T>
+__global__ void filterDirMap(const T *msk, const T *dmsk, T *dst) {
+  setup_kernel;
+
+  auto mskp = line(msk);
+  auto dmskp = line(dmsk);
+  auto dmskpp = lineOff(dmsk, -1);
+  auto dmskpn = lineOff(dmsk, 1);
+  auto &out = point(dst);
+
+  out = dmskp[x];
+
+  bounds_check3(x, 1, width - 1);
+  bounds_check3(y, 1, height - 1);
+
+  if (mskp[x] != peak)
+    return;
+
+  int order[9];
+  unsigned u = 0;
+
+  if (dmskpp[x - 1] != peak)
+    order[u++] = dmskpp[x - 1];
+  if (dmskpp[x] != peak)
+    order[u++] = dmskpp[x];
+  if (dmskpp[x + 1] != peak)
+    order[u++] = dmskpp[x + 1];
+  if (dmskp[x - 1] != peak)
+    order[u++] = dmskp[x - 1];
+  if (dmskp[x] != peak)
+    order[u++] = dmskp[x];
+  if (dmskp[x + 1] != peak)
+    order[u++] = dmskp[x + 1];
+  if (dmskpn[x - 1] != peak)
+    order[u++] = dmskpn[x - 1];
+  if (dmskpn[x] != peak)
+    order[u++] = dmskpn[x];
+  if (dmskpn[x + 1] != peak)
+    order[u++] = dmskpn[x + 1];
+
+  if (u < 4) {
+    out = peak;
+    return;
+  }
+
+  for (auto t = u; t < 9; ++t)
+    order[t] = std::numeric_limits<int>::max();
+
+  CMPSWAP(order, 0, 1);
+  CMPSWAP(order, 2, 3);
+  CMPSWAP(order, 0, 2);
+  CMPSWAP(order, 1, 3);
+  CMPSWAP(order, 1, 2);
+  CMPSWAP(order, 4, 5);
+  CMPSWAP(order, 7, 8);
+  CMPSWAP(order, 6, 8);
+  CMPSWAP(order, 6, 7);
+  CMPSWAP(order, 4, 7);
+  CMPSWAP(order, 4, 6);
+  CMPSWAP(order, 5, 8);
+  CMPSWAP(order, 5, 7);
+  CMPSWAP(order, 5, 6);
+  CMPSWAP(order, 0, 5);
+  CMPSWAP(order, 0, 4);
+  CMPSWAP(order, 1, 6);
+  CMPSWAP(order, 1, 5);
+  CMPSWAP(order, 1, 4);
+  CMPSWAP(order, 2, 7);
+  CMPSWAP(order, 3, 8);
+  CMPSWAP(order, 3, 7);
+  CMPSWAP(order, 2, 5);
+  CMPSWAP(order, 2, 4);
+  CMPSWAP(order, 3, 6);
+  CMPSWAP(order, 3, 5);
+  CMPSWAP(order, 3, 4);
+
+  const int mid =
+      (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
+  const int lim = limlut[std::abs(mid - neutral) >> shift2] << shift;
+  int sum = 0;
+  unsigned count = 0;
+
+  for (unsigned i = 0; i < u; i++) {
+    if (std::abs(order[i] - mid) <= lim) {
+      sum += order[i];
+      count++;
+    }
+  }
+
+  if (count < 4 || (count < 5 && dmskp[x] == peak)) {
+    out = peak;
+    return;
+  }
+
+  out = static_cast<int>(static_cast<float>(sum + mid) / (count + 1) + 0.5f);
+}
+
+template <typename T>
+__global__ void expandDirMap(const T *msk, const T *dmsk, T *dst) {
+  setup_kernel;
+
+  auto mskp = line(msk);
+  auto dmskp = line(dmsk);
+  auto dmskpp = lineOff(dmsk, -1);
+  auto dmskpn = lineOff(dmsk, 1);
+  auto &out = point(dst);
+
+  out = dmskp[x];
+
+  bounds_check3(x, 1, width - 1);
+  bounds_check3(y, 1, height - 1);
+
+  if (dmskp[x] != peak || mskp[x] != peak)
+    return;
+
+  int order[8];
+  unsigned u = 0;
+
+  if (dmskpp[x - 1] != peak)
+    order[u++] = dmskpp[x - 1];
+  if (dmskpp[x] != peak)
+    order[u++] = dmskpp[x];
+  if (dmskpp[x + 1] != peak)
+    order[u++] = dmskpp[x + 1];
+  if (dmskp[x - 1] != peak)
+    order[u++] = dmskp[x - 1];
+  if (dmskp[x + 1] != peak)
+    order[u++] = dmskp[x + 1];
+  if (dmskpn[x - 1] != peak)
+    order[u++] = dmskpn[x - 1];
+  if (dmskpn[x] != peak)
+    order[u++] = dmskpn[x];
+  if (dmskpn[x + 1] != peak)
+    order[u++] = dmskpn[x + 1];
+
+  if (u < 5)
+    return;
+
+  for (auto t = u; t < 8; ++t)
+    order[t] = std::numeric_limits<int>::max();
+
+  CMPSWAP(order, 0, 1);
+  CMPSWAP(order, 2, 3);
+  CMPSWAP(order, 0, 2);
+  CMPSWAP(order, 1, 3);
+  CMPSWAP(order, 1, 2);
+  CMPSWAP(order, 4, 5);
+  CMPSWAP(order, 6, 7);
+  CMPSWAP(order, 4, 6);
+  CMPSWAP(order, 5, 7);
+  CMPSWAP(order, 5, 6);
+  CMPSWAP(order, 0, 4);
+  CMPSWAP(order, 1, 5);
+  CMPSWAP(order, 1, 4);
+  CMPSWAP(order, 2, 6);
+  CMPSWAP(order, 3, 7);
+  CMPSWAP(order, 3, 6);
+  CMPSWAP(order, 2, 4);
+  CMPSWAP(order, 3, 5);
+  CMPSWAP(order, 3, 4);
+
+  const int mid =
+      (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
+  const int lim = limlut[std::abs(mid - neutral) >> shift2] << shift;
+  int sum = 0;
+  unsigned count = 0;
+
+  for (unsigned i = 0; i < u; i++) {
+    if (std::abs(order[i] - mid) <= lim) {
+      sum += order[i];
+      count++;
+    }
+  }
+
+  if (count < 5)
+    return;
+
+  out = static_cast<int>(static_cast<float>(sum + mid) / (count + 1) + 0.5f);
+}
+
+template <typename T>
+__global__ void filterMap(const T *msk, const T *dmsk, T *dst) {
+  setup_kernel;
+
+  auto mskp = line(msk);
+  auto dmskp = line(dmsk);
+  auto dmskpp = lineOff(dmsk, -1);
+  auto dmskpn = lineOff(dmsk, 1);
+  auto &out = point(dst);
+
+  out = dmskp[x];
+
+  bounds_check3(x, 1, width - 1);
+  bounds_check3(y, 1, height - 1);
+
+  if (dmskp[x] == peak || mskp[x] != peak)
+    return;
+
+  int dir = (dmskp[x] - neutral) / 4;
+  const int lim = std::max(std::abs(dir) * 2, twleve + 0);
+  dir >>= shift;
+  bool ict = false, icb = false;
+
+  if (dir < 0) {
+    for (int j = std::max(-(int)x, dir); j <= 0; j++) {
+      if ((std::abs(dmskpp[x + j] - dmskp[x]) > lim && dmskpp[x + j] != peak) ||
+          (dmskp[x + j] == peak && dmskpp[x + j] == peak) ||
+          (std::abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
+        ict = true;
+        break;
+      }
+    }
+  } else {
+    for (int j = 0; j <= std::min((int)width - (int)x - 1, dir); j++) {
+      if ((std::abs(dmskpp[x + j] - dmskp[x]) > lim && dmskpp[x + j] != peak) ||
+          (dmskp[x + j] == peak && dmskpp[x + j] == peak) ||
+          (std::abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
+        ict = true;
+        break;
+      }
+    }
+  }
+
+  if (ict) {
+    if (dir < 0) {
+      for (int j = 0; j <= std::min((int)width - (int)x - 1, std::abs(dir));
+           j++) {
+        if ((std::abs(dmskpn[x + j] - dmskp[x]) > lim &&
+             dmskpn[x + j] != peak) ||
+            (dmskpn[x + j] == peak && dmskp[x + j] == peak) ||
+            (std::abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
+          icb = true;
+          break;
+        }
+      }
+    } else {
+      for (int j = std::max(-(int)x, -dir); j <= 0; j++) {
+        if ((std::abs(dmskpn[x + j] - dmskp[x]) > lim &&
+             dmskpn[x + j] != peak) ||
+            (dmskpn[x + j] == peak && dmskp[x + j] == peak) ||
+            (std::abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
+          icb = true;
+          break;
+        }
+      }
+    }
+
+    if (icb)
       out = peak;
   }
 }

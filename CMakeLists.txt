@@ -21,13 +21,13 @@ target_include_directories(EEDI2CUDA PRIVATE
 target_compile_options(EEDI2CUDA PRIVATE
     --ptxas-options=-v
     --restrict
-    --use_fast_math
-    --extra-device-vectorization
+    --ftz=true
+    --fmad=true
     --Wdefault-stream-launch
     --Wno-deprecated-gpu-targets
     --expt-relaxed-constexpr)
 if(MSVC)
-    target_compile_options(EEDI2CUDA PRIVATE -Xcompiler=/W4)
+    target_compile_options(EEDI2CUDA PRIVATE "-Xcompiler=/W4 /wd4100 /wd4297 /wd4458")
 else()
     target_compile_options(EEDI2CUDA PRIVATE -Xcompiler=-Wall)
 endif()
