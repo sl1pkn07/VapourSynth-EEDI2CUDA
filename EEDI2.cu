@@ -23,6 +23,34 @@ class CUDAError : public std::runtime_error {
     }                                                                          \
   } while (0)
 
+template <typename T> __global__ void buildEdgeMask(const T *src, T *dst);
+template <typename T> __global__ void erode(const T *msk, T *dst);
+template <typename T> __global__ void dilate(const T *msk, T *dst);
+template <typename T> __global__ void removeSmallHorzGaps(const T *msk, T *dst);
+template <typename T>
+__global__ void calcDirections(const T *src, const T *msk, T *dst);
+template <typename T>
+__global__ void filterDirMap(const T *msk, const T *dmsk, T *dst);
+template <typename T>
+__global__ void expandDirMap(const T *msk, const T *dmsk, T *dst);
+template <typename T>
+__global__ void filterMap(const T *msk, const T *dmsk, T *dst);
+template <typename T>
+__global__ void markDirections2X(const T *msk, const T *dmsk, T *dst);
+template <typename T>
+__global__ void filterDirMap2X(const T *msk, const T *dmsk, T *dst);
+template <typename T>
+__global__ void expandDirMap2X(const T *msk, const T *dmsk, T *dst);
+template <typename T>
+__global__ void fillGaps2X(const T *msk, const T *dmsk, T *tmp);
+template <typename T>
+__global__ void fillGaps2XStep2(const T *msk, const T *dmsk, const T *tmp,
+                                T *dst);
+template <typename T>
+__global__ void interpolateLattice(const T *omsk, T *dmsk, T *dst);
+template <typename T>
+__global__ void postProcess(const T *nmsk, const T *omsk, T *dst);
+
 struct EEDI2Param {
   uint32_t d_pitch;
   uint32_t nt4, nt7, nt8, nt13, nt19;

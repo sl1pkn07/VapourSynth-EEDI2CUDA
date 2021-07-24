@@ -29,6 +29,6 @@ target_compile_options(EEDI2CUDA PRIVATE
 if(MSVC)
     target_compile_options(EEDI2CUDA PRIVATE "-Xcompiler=/W4 /wd4100 /wd4297 /wd4458")
 else()
-    target_compile_options(EEDI2CUDA PRIVATE -Xcompiler=-Wall)
+    target_compile_options(EEDI2CUDA PRIVATE "-Xcompiler=-Wall -Wno-terminate")
 endif()
 set_target_properties(EEDI2CUDA PROPERTIES CUDA_ARCHITECTURES "50-virtual;61-virtual;75-virtual;86-virtual")
