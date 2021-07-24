@@ -242,6 +242,15 @@ public:
                                                         tmp2);
 
           if (map != 3) {
+            if (field)
+              try_cuda(cudaMemcpyAsync(
+                  dst2 + d_pitch / sizeof(T) * (height2x - 1),
+                  dst2 + d_pitch / sizeof(T) * (height2x - 2), width_bytes,
+                  cudaMemcpyDeviceToDevice, stream));
+            else
+              try_cuda(cudaMemcpyAsync(dst2, dst2 + d_pitch / sizeof(T),
+                                       width_bytes, cudaMemcpyDeviceToDevice,
+                                       stream));
             interpolateLattice<<<grids, blocks, 0, stream>>>(tmp2_2, tmp2,
                                                              dst2);
 
@@ -1333,11 +1342,6 @@ __global__ void interpolateLattice(const T *omsk, T *dmsk, T *dst) {
 
   bounds_check3(x, 0, width);
   bounds_check3(y, 1, height - 1);
-
-  if (d->field)
-    (dstp + stride * (height - 2))[x] = (dstp + stride * (height - 1))[x];
-  else
-    dstpn[x] = dstp[x];
 
   int dir = dmskp[x];
   const int lim = limlut[std::abs(dir - neutral) >> shift2] << shift;
