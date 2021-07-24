@@ -75,6 +75,7 @@ template <typename T> class EEDI2Instance {
   T *dst2, *dst2M, *tmp2, *tmp2_2, *tmp2_3, *msk2;
 
   uint8_t map, pp, field, fieldS;
+  uint32_t d_pitch;
 
 public:
   EEDI2Instance(const VSMap *in, const VSAPI *vsapi)
@@ -167,7 +168,7 @@ private:
     auto height = vi->height;
     try_cuda(
         cudaMallocPitch(&mem[0], &pitch, width * sizeof(T), height * numMem));
-    auto d_pitch = param.d_pitch = static_cast<uint32_t>(pitch);
+    d_pitch = static_cast<uint32_t>(pitch);
     for (size_t i = 1; i < numMem; ++i)
       mem[i] = reinterpret_cast<T *>(reinterpret_cast<char *>(mem[i - 1]) +
                                      d_pitch * height);
@@ -215,7 +216,7 @@ public:
       auto h_dst = vsapi->getWritePtr(dst_frame.get(), plane);
       auto d_src = src;
       T *d_dst;
-      auto d_pitch = param.d_pitch;
+      auto d_pitch = this -> d_pitch;
       int dst_height;
 
       param.field = static_cast<uint8_t>(field);
@@ -223,6 +224,8 @@ public:
       param.height = static_cast<uint16_t>(height);
       param.subSampling =
           static_cast<uint8_t>(plane ? vi->format->subSamplingW : 0);
+      d_pitch >>= param.subSampling;
+      param.d_pitch = d_pitch;
 
       try_cuda(cudaMemcpy2DAsync(d_src, d_pitch, h_src, h_pitch, width_bytes,
                                  height, cudaMemcpyHostToDevice, stream));
