@@ -44,7 +44,7 @@ template <typename T> class EEDI2Instance {
   cudaStream_t stream;
   EEDI2Param param;
   T *dst, *msk, *tmp, *src;
-  T *dst2, *dst2M, *tmp2, *tmp2_2, *msk2;
+  T *dst2, *dst2M, *tmp2, *tmp2_2, *tmp2_3, *msk2;
 
   uint8_t map, pp, field, fieldS;
 
@@ -132,7 +132,7 @@ private:
 
     // alloc mem
     constexpr size_t numMem = 4;
-    constexpr size_t numMem2x = 5;
+    constexpr size_t numMem2x = 6;
     T **mem = &dst;
     size_t pitch;
     auto width = vi->width;
@@ -144,7 +144,7 @@ private:
       mem[i] = reinterpret_cast<T *>(reinterpret_cast<char *>(mem[i - 1]) +
                                      d_pitch * height);
     if (map == 0 || map == 3) {
-      try_cuda(cudaMalloc(&dst2, d_pitch * height * 10));
+      try_cuda(cudaMalloc(&dst2, d_pitch * height * numMem2x * 2));
       mem = &dst2;
       for (size_t i = 1; i < numMem2x; ++i)
         mem[i] = reinterpret_cast<T *>(reinterpret_cast<char *>(mem[i - 1]) +
@@ -173,10 +173,6 @@ public:
     auto dst_frame = vsapi->newVideoFrame(vi2->format, vi2->width, vi2->height,
                                           src_frame, core);
 
-    auto d_src = src;
-    auto d_dst = tmp2;
-    auto d_pitch = param.d_pitch;
-
     for (int plane = 0; plane < vi->format->numPlanes; ++plane) {
       auto width = vsapi->getFrameWidth(src_frame, plane);
       auto height = vsapi->getFrameHeight(src_frame, plane);
@@ -185,6 +181,10 @@ public:
       auto width_bytes = width * vi->format->bytesPerSample;
       auto h_src = vsapi->getReadPtr(src_frame, plane);
       auto h_dst = vsapi->getWritePtr(dst_frame, plane);
+      auto d_src = src;
+      T *d_dst;
+      auto d_pitch = param.d_pitch;
+      int dst_height;
 
       param.field = static_cast<uint8_t>(field);
       param.width = static_cast<uint16_t>(width);
@@ -219,8 +219,10 @@ public:
                                        src, d_pitch, width_bytes, height,
                                        cudaMemcpyDeviceToDevice, stream));
           };
-          cudaMemset2DAsync(dst2, d_pitch, 0, width_bytes, height2x, stream);
-          cudaMemset2DAsync(tmp2, d_pitch, 255, width_bytes, height2x, stream);
+          try_cuda(cudaMemset2DAsync(dst2, d_pitch, 0, width_bytes, height2x,
+                                     stream));
+          try_cuda(cudaMemset2DAsync(tmp2, d_pitch, 255, width_bytes, height2x,
+                                     stream));
           upscaleBy2(src, dst2);
           upscaleBy2(dst, tmp2_2);
           upscaleBy2(msk, msk2);
@@ -228,13 +230,46 @@ public:
           markDirections2X<<<grids, blocks, 0, stream>>>(msk2, tmp2_2, tmp2);
           filterDirMap2X<<<grids, blocks, 0, stream>>>(msk2, tmp2, dst2M);
           expandDirMap2X<<<grids, blocks, 0, stream>>>(msk2, dst2M, tmp2);
-          fillGaps2X<<<grids, blocks, 0, stream>>>(msk2, tmp2, dst2M);
-          fillGaps2X<<<grids, blocks, 0, stream>>>(msk2, dst2M, tmp2);
+          fillGaps2X<<<grids, blocks, 0, stream>>>(msk2, tmp2, tmp2_3);
+          fillGaps2XStep2<<<grids, blocks, 0, stream>>>(msk2, tmp2, tmp2_3,
+                                                        dst2M);
+          fillGaps2X<<<grids, blocks, 0, stream>>>(msk2, dst2M, tmp2_3);
+          fillGaps2XStep2<<<grids, blocks, 0, stream>>>(msk2, dst2M, tmp2_3,
+                                                        tmp2);
+
+          if (map != 3) {
+            interpolateLattice<<<grids, blocks, 0, stream>>>(tmp2_2, tmp2,
+                                                             dst2);
+
+            if (pp == 1) {
+              try_cuda(cudaMemcpy2DAsync(tmp2_2, d_pitch, tmp2, d_pitch,
+                                         width_bytes, height2x,
+                                         cudaMemcpyDeviceToDevice, stream));
+              filterDirMap2X<<<grids, blocks, 0, stream>>>(msk2, tmp2, dst2M);
+              expandDirMap2X<<<grids, blocks, 0, stream>>>(msk2, dst2M, tmp2);
+              postProcess<<<grids, blocks, 0, stream>>>(tmp2, tmp2_2, dst2);
+            } else if (pp != 0) {
+              throw std::runtime_error("currently only pp == 1 is supported");
+            }
+          }
         }
       }
 
+      if (map == 0) {
+        d_dst = dst2;
+        dst_height = height2x;
+      } else if (map == 1) {
+        d_dst = msk;
+        dst_height = height;
+      } else if (map == 3) {
+        d_dst = tmp2;
+        dst_height = height2x;
+      } else {
+        d_dst = dst;
+        dst_height = height;
+      }
       try_cuda(cudaMemcpy2DAsync(h_dst, h_pitch, d_dst, d_pitch, width_bytes,
-                                 height, cudaMemcpyDeviceToHost, stream));
+                                 dst_height, cudaMemcpyDeviceToHost, stream));
       try_cuda(cudaStreamSynchronize(stream));
     }
 
@@ -249,7 +284,8 @@ public:
            y = threadIdx.y + blockIdx.y * blockDim.y;                          \
   constexpr T shift = sizeof(T) * 8 - 8, peak = std::numeric_limits<T>::max(), \
               ten = 10 << shift, twleve = 12 << shift, eight = 8 << shift,     \
-              twenty = 20 << shift, fiveHundred = 500 << shift;                \
+              twenty = 20 << shift, fiveHundred = 500 << shift,                \
+              three = 3 << shift, nine = 9 << shift;                           \
   constexpr T shift2 = shift + 2, neutral = peak / 2;                          \
   if (x >= width || y >= height)                                               \
   return
@@ -1128,7 +1164,7 @@ __global__ void expandDirMap2X(const T *msk, const T *dmsk, T *dst) {
 }
 
 template <typename T>
-__global__ void fillGaps2X(const T *msk, const T *dmsk, T *dst) {
+__global__ void fillGaps2X(const T *msk, const T *dmsk, T *tmp) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -1138,9 +1174,9 @@ __global__ void fillGaps2X(const T *msk, const T *dmsk, T *dst) {
   auto mskpnn = lineOff(msk, 3);
   auto dmskpn = lineOff(dmsk, 2);
   auto dmskpp = lineOff(dmsk, -2);
-  auto dstp = line(dst);
+  auto &out_tmp = point(tmp);
 
-  dstp[x] = dmskp[x];
+  out_tmp = 0;
 
   bounds_check3(x, 1, width - 1);
   bounds_check3(y, 1, height - 1);
@@ -1151,7 +1187,7 @@ __global__ void fillGaps2X(const T *msk, const T *dmsk, T *dst) {
   unsigned u = x - 1, v = x + 1;
   int back = fiveHundred, forward = -fiveHundred;
 
-  while (u) {
+  while (u && x - u < 255) {
     if (dmskp[u] != peak) {
       back = dmskp[u];
       break;
@@ -1161,7 +1197,7 @@ __global__ void fillGaps2X(const T *msk, const T *dmsk, T *dst) {
     u--;
   }
 
-  while (v < width) {
+  while (v < width && v - x < 255) {
     if (dmskp[v] != peak) {
       forward = dmskp[v];
       break;
@@ -1215,10 +1251,237 @@ __global__ void fillGaps2X(const T *msk, const T *dmsk, T *dst) {
       std::max(std::abs(forward - neutral), std::abs(back - neutral)) >> shift2,
       6);
   if (std::abs(forward - back) <= thresh && (v - u - 1 <= lim || tc || bc)) {
-    const float step = static_cast<float>(forward - back) / (v - u);
-    for (unsigned j = 0; j < v - u - 1; j++)
-      dstp[u + j + 1] = back + static_cast<int>(j * step + 0.5);
+    //    const float step = static_cast<float>(forward - back) / (v - u);
+    //    for (unsigned j = 0; j < v - u - 1; j++)
+    //      dstp[u + j + 1] = back + static_cast<int>(j * step + 0.5);
+    out_tmp = (x - u) | (v - x) << 8u;
   }
+}
+
+template <typename T>
+__global__ void fillGaps2XStep2(const T *msk, const T *dmsk, const T *tmp,
+                                T *dst) {
+  setup_kernel2x;
+
+  auto mskp = lineOff(msk, -1);
+  auto dmskp = line(dmsk);
+  auto mskpn = lineOff(msk, 1);
+  auto tmpp = line(tmp);
+  auto &out = point(dst);
+
+  out = dmskp[x];
+
+  bounds_check3(x, 1, width - 1);
+  bounds_check3(y, 1, height - 1);
+
+  unsigned uv = 0, pos;
+
+  for (unsigned i = x + 1; i - x < 255 && i < width; ++i) {
+    if (i - (tmpp[i] & 255u) < x) {
+      uv = tmpp[i];
+      pos = i;
+      break;
+    }
+    if (dmskp[i] != peak || mskp[i] != peak && mskpn[i] != peak) {
+      break;
+    }
+  }
+
+  if (!uv) {
+    uv = tmpp[x];
+    pos = x;
+  }
+
+  if (!uv)
+    for (unsigned i = x - 1; x - i < 255 && i; --i) {
+      if (i + (tmpp[i] >> 8) > x) {
+        uv = tmpp[i];
+        pos = i;
+        break;
+      }
+      if (dmskp[i] != peak || mskp[i] != peak && mskpn[i] != peak) {
+        break;
+      }
+    }
+
+  if (!uv)
+    return;
+
+  auto u = pos - (uv & 255);
+  auto v = pos + (uv >> 8);
+  auto back = dmskp[u];
+  auto forward = dmskp[v];
+
+  auto step = static_cast<float>(forward - back) / (v - u);
+  out = back + static_cast<unsigned>((x - 1 - u) * step + 0.5);
+}
+
+template <typename T>
+__global__ void interpolateLattice(const T *omsk, T *dmsk, T *dst) {
+  setup_kernel2x;
+
+  auto omskp = lineOff(omsk, -1);
+  auto omskn = lineOff(omsk, 1);
+  auto dmskp = line(dmsk);
+  auto dstp = lineOff(dst, -1);
+  auto dstpn = line(dst);
+  auto dstpnn = lineOff(dst, 1);
+
+  bounds_check3(x, 0, width);
+  bounds_check3(y, 1, height - 1);
+
+  if (d->field)
+    (dstp + stride * (height - 2))[x] = (dstp + stride * (height - 1))[x];
+  else
+    dstpn[x] = dstp[x];
+
+  int dir = dmskp[x];
+  const int lim = limlut[std::abs(dir - neutral) >> shift2] << shift;
+
+  if (dir == peak || (std::abs(dmskp[x] - dmskp[x - 1]) > lim &&
+                      std::abs(dmskp[x] - dmskp[x + 1]) > lim)) {
+    dstpn[x] = (dstp[x] + dstpnn[x] + 1) / 2;
+    if (dir != peak)
+      dmskp[x] = neutral;
+    return;
+  }
+
+  if (lim < nine) {
+    const unsigned sum = (dstp[x - 1] + dstp[x] + dstp[x + 1] + dstpnn[x - 1] +
+                          dstpnn[x] + dstpnn[x + 1]) >>
+                         shift;
+    const unsigned sumsq = (dstp[x - 1] >> shift) * (dstp[x - 1] >> shift) +
+                           (dstp[x] >> shift) * (dstp[x] >> shift) +
+                           (dstp[x + 1] >> shift) * (dstp[x + 1] >> shift) +
+                           (dstpnn[x - 1] >> shift) * (dstpnn[x - 1] >> shift) +
+                           (dstpnn[x] >> shift) * (dstpnn[x] >> shift) +
+                           (dstpnn[x + 1] >> shift) * (dstpnn[x + 1] >> shift);
+    if (6 * sumsq - sum * sum < 576) {
+      dstpn[x] = (dstp[x] + dstpnn[x] + 1) / 2;
+      dmskp[x] = peak;
+      return;
+    }
+  }
+
+  if (x > 1 && x < width - 2 &&
+      ((dstp[x] < std::max(dstp[x - 2], dstp[x - 1]) - three &&
+        dstp[x] < std::max(dstp[x + 2], dstp[x + 1]) - three &&
+        dstpnn[x] < std::max(dstpnn[x - 2], dstpnn[x - 1]) - three &&
+        dstpnn[x] < std::max(dstpnn[x + 2], dstpnn[x + 1]) - three) ||
+       (dstp[x] > std::min(dstp[x - 2], dstp[x - 1]) + three &&
+        dstp[x] > std::min(dstp[x + 2], dstp[x + 1]) + three &&
+        dstpnn[x] > std::min(dstpnn[x - 2], dstpnn[x - 1]) + three &&
+        dstpnn[x] > std::min(dstpnn[x + 2], dstpnn[x + 1]) + three))) {
+    dstpn[x] = (dstp[x] + dstpnn[x] + 1) / 2;
+    dmskp[x] = neutral;
+    return;
+  }
+
+  dir = (dir - neutral + (1 << (shift2 - 1))) >> shift2;
+  const int uStart = (dir - 2 < 0) ? std::max({-x + 1, dir - 2, -width + 2 + x})
+                                   : std::min({x - 1, dir - 2, width - 2 - x});
+  const int uStop = (dir + 2 < 0) ? std::max({-x + 1, dir + 2, -width + 2 + x})
+                                  : std::min({x - 1, dir + 2, width - 2 - x});
+  unsigned min = d->nt8;
+  unsigned val = (dstp[x] + dstpnn[x] + 1) / 2;
+
+  for (int u = uStart; u <= uStop; u++) {
+    const unsigned diff = std::abs(dstp[x - 1] - dstpnn[x - u - 1]) +
+                          std::abs(dstp[x] - dstpnn[x - u]) +
+                          std::abs(dstp[x + 1] - dstpnn[x - u + 1]) +
+                          std::abs(dstpnn[x - 1] - dstp[x + u - 1]) +
+                          std::abs(dstpnn[x] - dstp[x + u]) +
+                          std::abs(dstpnn[x + 1] - dstp[x + u + 1]);
+    if (diff < min &&
+        ((omskp[x - 1 + u] != peak &&
+          std::abs(omskp[x - 1 + u] - dmskp[x]) <= lim) ||
+         (omskp[x + u] != peak && std::abs(omskp[x + u] - dmskp[x]) <= lim) ||
+         (omskp[x + 1 + u] != peak &&
+          std::abs(omskp[x + 1 + u] - dmskp[x]) <= lim)) &&
+        ((omskn[x - 1 - u] != peak &&
+          std::abs(omskn[x - 1 - u] - dmskp[x]) <= lim) ||
+         (omskn[x - u] != peak && std::abs(omskn[x - u] - dmskp[x]) <= lim) ||
+         (omskn[x + 1 - u] != peak &&
+          std::abs(omskn[x + 1 - u] - dmskp[x]) <= lim))) {
+      const unsigned diff2 =
+          std::abs(dstp[x + u / 2 - 1] - dstpnn[x - u / 2 - 1]) +
+          std::abs(dstp[x + u / 2] - dstpnn[x - u / 2]) +
+          std::abs(dstp[x + u / 2 + 1] - dstpnn[x - u / 2 + 1]);
+      if (diff2 < d->nt4 &&
+          (((std::abs(omskp[x + u / 2] - omskn[x - u / 2]) <= lim ||
+             std::abs(omskp[x + u / 2] - omskn[x - ((u + 1) / 2)]) <= lim) &&
+            omskp[x + u / 2] != peak) ||
+           ((std::abs(omskp[x + ((u + 1) / 2)] - omskn[x - u / 2]) <= lim ||
+             std::abs(omskp[x + ((u + 1) / 2)] - omskn[x - ((u + 1) / 2)]) <=
+                 lim) &&
+            omskp[x + ((u + 1) / 2)] != peak))) {
+        if ((std::abs(dmskp[x] - omskp[x + u / 2]) <= lim ||
+             std::abs(dmskp[x] - omskp[x + ((u + 1) / 2)]) <= lim) &&
+            (std::abs(dmskp[x] - omskn[x - u / 2]) <= lim ||
+             std::abs(dmskp[x] - omskn[x - ((u + 1) / 2)]) <= lim)) {
+          val = (dstp[x + u / 2] + dstp[x + ((u + 1) / 2)] + dstpnn[x - u / 2] +
+                 dstpnn[x - ((u + 1) / 2)] + 2) /
+                4;
+          min = diff;
+          dir = u;
+        }
+      }
+    }
+  }
+
+  if (min != d->nt8) {
+    dstpn[x] = val;
+    dmskp[x] = neutral + (dir << shift2);
+  } else {
+    const int dt = 4 >> d->subSampling;
+    const int uStart2 = std::max(-x + 1, -dt);
+    const int uStop2 = std::min(width - 2 - x, dt);
+    const unsigned minm = std::min(dstp[x], dstpnn[x]);
+    const unsigned maxm = std::max(dstp[x], dstpnn[x]);
+    min = d->nt7;
+
+    for (int u = uStart2; u <= uStop2; u++) {
+      const int p1 = dstp[x + u / 2] + dstp[x + ((u + 1) / 2)];
+      const int p2 = dstpnn[x - u / 2] + dstpnn[x - ((u + 1) / 2)];
+      const unsigned diff = std::abs(dstp[x - 1] - dstpnn[x - u - 1]) +
+                            std::abs(dstp[x] - dstpnn[x - u]) +
+                            std::abs(dstp[x + 1] - dstpnn[x - u + 1]) +
+                            std::abs(dstpnn[x - 1] - dstp[x + u - 1]) +
+                            std::abs(dstpnn[x] - dstp[x + u]) +
+                            std::abs(dstpnn[x + 1] - dstp[x + u + 1]) +
+                            std::abs(p1 - p2);
+      if (diff < min) {
+        const unsigned valt = (p1 + p2 + 2) / 4;
+        if (valt >= minm && valt <= maxm) {
+          val = valt;
+          min = diff;
+          dir = u;
+        }
+      }
+    }
+
+    dstpn[x] = val;
+    dmskp[x] = (min == d->nt7) ? neutral : neutral + (dir << shift2);
+  }
+}
+
+template <typename T>
+__global__ void postProcess(const T *nmsk, const T *omsk, T *dst) {
+  setup_kernel2x;
+
+  auto nmskp = line(nmsk);
+  auto omskp = line(omsk);
+  auto &out = point(dst);
+  auto dstpp = lineOff(dst, -1);
+  auto dstpn = lineOff(dst, 1);
+
+  bounds_check3(x, 0, width);
+  bounds_check3(y, 1, height - 1);
+
+  const int lim = limlut[std::abs(nmskp[x] - neutral) >> shift2] << shift;
+  if (std::abs(nmskp[x] - omskp[x]) > lim && omskp[x] != peak &&
+      omskp[x] != neutral)
+    out = (dstpp[x] + dstpn[x] + 1) / 2;
 }
 
 template <typename T>
