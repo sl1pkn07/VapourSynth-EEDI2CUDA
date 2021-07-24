@@ -28,9 +28,9 @@ struct EEDI2Param {
   uint32_t nt4, nt7, nt8, nt13, nt19;
   uint16_t mthresh, lthresh, vthresh;
   uint16_t width, height;
-  uint8_t field, fieldS;
+  uint8_t field;
   uint8_t estr, dstr, maxd;
-  uint8_t map, pp, plane, subSampling;
+  uint8_t subSampling;
 };
 __constant__ char d_buf[sizeof(EEDI2Param)];
 __constant__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10,
@@ -44,6 +44,8 @@ template <typename T> class EEDI2Instance {
   cudaStream_t stream;
   EEDI2Param param;
   T *dst, *msk, *tmp, *src;
+
+  uint8_t map, pp, field, fieldS;
 
 public:
   EEDI2Instance(const VSMap *in, const VSAPI *vsapi)
@@ -79,7 +81,7 @@ private:
       return err ? def : ret;
     };
 
-    param.field = narrow<uint8_t>(vsapi->propGetInt(in, "field", 0, nullptr));
+    field = narrow<uint8_t>(vsapi->propGetInt(in, "field", 0, nullptr));
 
     param.mthresh = narrow<uint8_t>(propGetIntDefault("mthresh", 10));
     param.lthresh = narrow<uint8_t>(propGetIntDefault("lthresh", 20));
@@ -89,27 +91,27 @@ private:
     param.dstr = narrow<uint8_t>(propGetIntDefault("dstr", 4));
     param.maxd = narrow<uint8_t>(propGetIntDefault("maxd", 24));
 
-    param.map = narrow<uint8_t>(propGetIntDefault("map", 0));
-    param.pp = narrow<uint8_t>(propGetIntDefault("pp", 1));
+    map = narrow<uint8_t>(propGetIntDefault("map", 0));
+    pp = narrow<uint8_t>(propGetIntDefault("pp", 1));
 
     uint16_t nt = narrow<uint8_t>(propGetIntDefault("nt", 50));
 
-    if (param.field > 3)
+    if (field > 3)
       throw invalid_arg("field must be 0, 1, 2 or 3");
     if (param.maxd < 1 || param.maxd > 29)
       throw invalid_arg("maxd must be between 1 and 29 (inclusive)");
-    if (param.map > 3)
+    if (map > 3)
       throw invalid_arg("map must be 0, 1, 2 or 3");
-    if (param.pp > 3)
+    if (pp > 3)
       throw invalid_arg("pp must be 0, 1, 2 or 3");
 
-    param.fieldS = param.field;
-    if (param.fieldS == 2)
-      param.field = 0;
-    else if (param.fieldS == 3)
-      param.field = 1;
+    fieldS = field;
+    if (fieldS == 2)
+      field = 0;
+    else if (fieldS == 3)
+      field = 1;
 
-    if (param.map == 0 || param.map == 3)
+    if (map == 0 || map == 3)
       vi2->height *= 2;
 
     param.mthresh *= param.mthresh;
@@ -152,10 +154,9 @@ public:
     } else if (activationReason != arAllFramesReady)
       return nullptr;
 
-    auto field = this->param.field;
-    if (param.fieldS > 1)
-      field =
-          (n & 1) ? (param.fieldS == 2 ? 1 : 0) : (param.fieldS == 2 ? 0 : 1);
+    auto field = this->field;
+    if (fieldS > 1)
+      field = (n & 1) ? (fieldS == 2 ? 1 : 0) : (fieldS == 2 ? 0 : 1);
 
     auto src_frame = vsapi->getFrameFilter(n, node.get(), frameCtx);
     auto dst_frame = vsapi->newVideoFrame(vi2->format, vi2->width, vi2->height,
@@ -174,7 +175,6 @@ public:
       auto h_dst = vsapi->getWritePtr(dst_frame, plane);
 
       param.field = static_cast<uint8_t>(field);
-      param.plane = static_cast<uint8_t>(plane);
       param.width = static_cast<uint16_t>(width);
       param.height = static_cast<uint16_t>(height);
       param.subSampling =
@@ -193,7 +193,7 @@ public:
       dilate<<<grids, blocks, 0, stream>>>(tmp, msk);
       erode<<<grids, blocks, 0, stream>>>(msk, tmp);
       removeSmallHorzGaps<<<grids, blocks, 0, stream>>>(tmp, msk);
-      if (param.map != 1) {
+      if (map != 1) {
         calcDirections<<<grids, blocks, 0, stream>>>(src, msk, tmp);
         filterDirMap<<<grids, blocks, 0, stream>>>(msk, tmp, dst);
         expandDirMap<<<grids, blocks, 0, stream>>>(msk, dst, tmp);
