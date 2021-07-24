@@ -1,0 +1,29 @@
+name: Build
+
+on: [push, workflow_dispatch]
+
+jobs:
+  build-windows:
+    runs-on: windows-2019
+    defaults:
+      run:
+        shell: cmd
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v2
+    - name: Setup msbuild
+      uses: microsoft/setup-msbuild@v1
+    - name: Setup CUDA
+      uses: Jimver/cuda-toolkit@v0.2.4
+    - name: Configure
+      run: |
+        mkdir build
+        cmake -S. -Bbuild -DCMAKE_BUILD_TYPE=Release
+    - name: Build
+      run: msbuild /m /p:Configuration=Release /p:Platform=x64 VapourSynth-EEDI2CUDA.sln
+      working-directory: build
+    - name: Upload
+      uses: actions/upload-artifact@v2
+      with:
+        name: EEDI2CUDA
+        path: build/Release/EEDI2CUDA.dll
