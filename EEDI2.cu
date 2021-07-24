@@ -169,18 +169,22 @@ public:
     if (fieldS > 1)
       field = (n & 1) ? (fieldS == 2 ? 1 : 0) : (fieldS == 2 ? 0 : 1);
 
-    auto src_frame = vsapi->getFrameFilter(n, node.get(), frameCtx);
-    auto dst_frame = vsapi->newVideoFrame(vi2->format, vi2->width, vi2->height,
-                                          src_frame, core);
+    std::unique_ptr<const VSFrameRef, void (*const)(const VSFrameRef *)>
+        src_frame{vsapi->getFrameFilter(n, node.get(), frameCtx),
+                  vsapi->freeFrame};
+    std::unique_ptr<VSFrameRef, void (*const)(const VSFrameRef *)> dst_frame{
+        vsapi->newVideoFrame(vi2->format, vi2->width, vi2->height,
+                             src_frame.get(), core),
+        vsapi->freeFrame};
 
     for (int plane = 0; plane < vi->format->numPlanes; ++plane) {
-      auto width = vsapi->getFrameWidth(src_frame, plane);
-      auto height = vsapi->getFrameHeight(src_frame, plane);
+      auto width = vsapi->getFrameWidth(src_frame.get(), plane);
+      auto height = vsapi->getFrameHeight(src_frame.get(), plane);
       auto height2x = height * 2;
-      auto h_pitch = vsapi->getStride(src_frame, plane);
+      auto h_pitch = vsapi->getStride(src_frame.get(), plane);
       auto width_bytes = width * vi->format->bytesPerSample;
-      auto h_src = vsapi->getReadPtr(src_frame, plane);
-      auto h_dst = vsapi->getWritePtr(dst_frame, plane);
+      auto h_src = vsapi->getReadPtr(src_frame.get(), plane);
+      auto h_dst = vsapi->getWritePtr(dst_frame.get(), plane);
       auto d_src = src;
       T *d_dst;
       auto d_pitch = param.d_pitch;
@@ -273,7 +277,7 @@ public:
       try_cuda(cudaStreamSynchronize(stream));
     }
 
-    return dst_frame;
+    return dst_frame.release();
   }
 };
 
