@@ -37,37 +37,33 @@ __constant__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10,
                                11, 11, 12, 12, 12, 12, 12, 12, 12, 12, 12,
                                12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};
 
-template <typename T> struct EEDI2Instance {
-  VSNodeRef *node;
-  const VSVideoInfo *vi; // input
-  VSVideoInfo *vi2;      // output
+template <typename T> class EEDI2Instance {
+  std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
+  const VSVideoInfo *vi;
+  std::unique_ptr<VSVideoInfo> vi2;
   cudaStream_t stream;
   EEDI2Param param;
   T *dst, *msk, *tmp, *src;
 
-  void freeResources(const VSAPI *vsapi) noexcept {
-    // free VS related resource
-    if (node) {
-      vsapi->freeNode(node);
-      node = nullptr;
-      delete vi2;
-    }
-
-    // free CUDA related resource
-    if (stream) {
-      try_cuda(cudaFree(dst));
-      try_cuda(cudaStreamDestroy(stream));
-      stream = nullptr;
-    }
+public:
+  EEDI2Instance(const VSMap *in, const VSAPI *vsapi)
+      : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
+    initParams(in, vsapi);
+    initCuda();
   }
 
+  ~EEDI2Instance() {
+    try_cuda(cudaFree(dst));
+    try_cuda(cudaStreamDestroy(stream));
+  }
+
+private:
   void initParams(const VSMap *in, const VSAPI *vsapi) {
     using invalid_arg = std::invalid_argument;
     using gsl::narrow;
 
-    node = vsapi->propGetNode(in, "clip", 0, nullptr);
-    vi = vsapi->getVideoInfo(node);
-    auto vi2 = std::make_unique<VSVideoInfo>(*vi);
+    vi = vsapi->getVideoInfo(node.get());
+    vi2 = std::make_unique<VSVideoInfo>(*vi);
     const auto &fmt = *vi->format;
 
     if (!isConstantFormat(vi) || fmt.sampleType != stInteger ||
@@ -125,8 +121,6 @@ template <typename T> struct EEDI2Instance {
     param.nt8 = nt * 8;
     param.nt13 = nt * 13;
     param.nt19 = nt * 19;
-
-    this->vi2 = vi2.release();
   }
 
   void initCuda() {
@@ -145,14 +139,25 @@ template <typename T> struct EEDI2Instance {
                                      d_pitch * vi->height);
   }
 
-  VSFrameRef *getFrame(int n, VSFrameContext *frameCtx, VSCore *core,
-                       const VSAPI *vsapi) {
+public:
+  void initNode(VSNode *node, const VSAPI *vsapi) {
+    vsapi->setVideoInfo(vi2.get(), 1, node);
+  }
+
+  VSFrameRef *getFrame(int n, int activationReason, VSFrameContext *frameCtx,
+                       VSCore *core, const VSAPI *vsapi) {
+    if (activationReason == arInitial) {
+      vsapi->requestFrameFilter(n, node.get(), frameCtx);
+      return nullptr;
+    } else if (activationReason != arAllFramesReady)
+      return nullptr;
+
     auto field = this->param.field;
     if (param.fieldS > 1)
       field =
           (n & 1) ? (param.fieldS == 2 ? 1 : 0) : (param.fieldS == 2 ? 0 : 1);
 
-    auto src_frame = vsapi->getFrameFilter(n, node, frameCtx);
+    auto src_frame = vsapi->getFrameFilter(n, node.get(), frameCtx);
     auto dst_frame = vsapi->newVideoFrame(vi2->format, vi2->width, vi2->height,
                                           src_frame, core);
 
@@ -804,7 +809,7 @@ template <typename T>
 void VS_CC eedi2Init(VSMap *_in, VSMap *_out, void **instanceData, VSNode *node,
                      VSCore *_core, const VSAPI *vsapi) {
   auto d = static_cast<EEDI2Instance<T> *>(*instanceData);
-  vsapi->setVideoInfo(d->vi2, 1, node);
+  d->initNode(node, vsapi);
 }
 
 template <typename T>
@@ -813,38 +818,31 @@ const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason,
                                       VSFrameContext *frameCtx, VSCore *core,
                                       const VSAPI *vsapi) {
   auto d = static_cast<EEDI2Instance<T> *>(*instanceData);
-  if (activationReason == arInitial)
-    vsapi->requestFrameFilter(n, d->node, frameCtx);
-  else if (activationReason == arAllFramesReady)
-    try {
-      return d->getFrame(n, frameCtx, core, vsapi);
-    } catch (const std::exception &exc) {
-      vsapi->setFilterError(("EEDI2CUDA: "s + exc.what()).c_str(), frameCtx);
-    }
-  return nullptr;
+  try {
+    return d->getFrame(n, activationReason, frameCtx, core, vsapi);
+  } catch (const std::exception &exc) {
+    vsapi->setFilterError(("EEDI2CUDA: "s + exc.what()).c_str(), frameCtx);
+    return nullptr;
+  }
 }
 
 template <typename T>
 void VS_CC eedi2Free(void *instanceData, VSCore *_core, const VSAPI *vsapi) {
   auto d = static_cast<EEDI2Instance<T> *>(instanceData);
-  d->freeResources(vsapi);
   delete d;
 }
 
 template <typename T>
 void eedi2CreateInner(const VSMap *in, VSMap *out, const VSAPI *vsapi,
                       VSCore *core) {
-  std::unique_ptr<EEDI2Instance<T>> d{new EEDI2Instance<T>()};
   try {
-    d->initParams(in, vsapi);
-    d->initCuda();
+    vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>,
+                        eedi2Free<T>, fmParallelRequests, 0,
+                        new EEDI2Instance<T>(in, vsapi), core);
   } catch (const std::exception &exc) {
-    d->freeResources(vsapi);
     vsapi->setError(out, ("EEDI2CUDA: "s + exc.what()).c_str());
     return;
   }
-  vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>,
-                      eedi2Free<T>, fmParallelRequests, 0, d.release(), core);
 }
 
 void VS_CC eedi2Create(const VSMap *in, VSMap *out, void *_userData,
