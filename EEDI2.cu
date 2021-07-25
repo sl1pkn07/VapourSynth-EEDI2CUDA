@@ -61,7 +61,7 @@ struct EEDI2Param {
   uint8_t estr, dstr, maxd;
   uint8_t subSampling;
 };
-__constant__ char d_buf[sizeof(EEDI2Param)];
+__constant__ char d_buf[sizeof(EEDI2Param) * 32];
 __constant__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10,
                                11, 11, 12, 12, 12, 12, 12, 12, 12, 12, 12,
                                12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};
@@ -76,27 +76,28 @@ template <typename T> class EEDI2Instance {
   T *dst2, *dst2M, *tmp2, *tmp2_2, *tmp2_3, *msk2;
 
   uint8_t map, pp, field, fieldS;
-  uint32_t d_pitch;
+  uint32_t d_pitch, instanceId;
 
 public:
-  EEDI2Instance(const VSMap *in, const VSAPI *vsapi)
-      : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
+  EEDI2Instance(const unsigned instanceId, const VSMap *in, const VSAPI *vsapi)
+      : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode),
+        instanceId(instanceId) {
     initParams(in, vsapi);
     initCuda();
   }
 
-  EEDI2Instance(const EEDI2Instance &other, const VSAPI *vsapi)
+  EEDI2Instance(const unsigned instanceId, const EEDI2Instance &other,
+                const VSAPI *vsapi)
       : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode),
         vi(other.vi), vi2(std::make_unique<VSVideoInfo>(*other.vi2)),
         param(other.param), map(other.map), pp(other.pp), field(other.field),
-        fieldS(other.fieldS), d_pitch(other.d_pitch) {
+        fieldS(other.fieldS), d_pitch(other.d_pitch), instanceId(instanceId) {
     initCuda();
   }
 
-  EEDI2Instance(EEDI2Instance &&other) = default;
-
   ~EEDI2Instance() {
     try_cuda(cudaFree(dst));
+    try_cuda(cudaFree(dst2));
     try_cuda(cudaStreamDestroy(stream));
   }
 
@@ -236,26 +237,31 @@ public:
       d_pitch >>= param.subSampling;
       param.d_pitch = d_pitch;
 
+      EEDI2Param *d;
+      try_cuda(cudaGetSymbolAddress(reinterpret_cast<void **>(&d), d_buf));
+      d += instanceId;
+
       try_cuda(cudaMemcpy2DAsync(d_src, d_pitch, h_src, h_pitch, width_bytes,
                                  height, cudaMemcpyHostToDevice, stream));
-      try_cuda(cudaMemcpyToSymbolAsync(d_buf, &param, sizeof(EEDI2Param), 0,
+      try_cuda(cudaMemcpyToSymbolAsync(d_buf, &param, sizeof(EEDI2Param),
+                                       sizeof(EEDI2Param) * instanceId,
                                        cudaMemcpyHostToDevice, stream));
 
       dim3 blocks = dim3(16, 8);
       dim3 grids =
           dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
 
-      buildEdgeMask<<<grids, blocks, 0, stream>>>(src, msk);
-      erode<<<grids, blocks, 0, stream>>>(msk, tmp);
-      dilate<<<grids, blocks, 0, stream>>>(tmp, msk);
-      erode<<<grids, blocks, 0, stream>>>(msk, tmp);
-      removeSmallHorzGaps<<<grids, blocks, 0, stream>>>(tmp, msk);
+      buildEdgeMask<<<grids, blocks, 0, stream>>>(d, src, msk);
+      erode<<<grids, blocks, 0, stream>>>(d, msk, tmp);
+      dilate<<<grids, blocks, 0, stream>>>(d, tmp, msk);
+      erode<<<grids, blocks, 0, stream>>>(d, msk, tmp);
+      removeSmallHorzGaps<<<grids, blocks, 0, stream>>>(d, tmp, msk);
 
       if (map != 1) {
-        calcDirections<<<grids, blocks, 0, stream>>>(src, msk, tmp);
-        filterDirMap<<<grids, blocks, 0, stream>>>(msk, tmp, dst);
-        expandDirMap<<<grids, blocks, 0, stream>>>(msk, dst, tmp);
-        filterMap<<<grids, blocks, 0, stream>>>(msk, tmp, dst);
+        calcDirections<<<grids, blocks, 0, stream>>>(d, src, msk, tmp);
+        filterDirMap<<<grids, blocks, 0, stream>>>(d, msk, tmp, dst);
+        expandDirMap<<<grids, blocks, 0, stream>>>(d, msk, dst, tmp);
+        filterMap<<<grids, blocks, 0, stream>>>(d, msk, tmp, dst);
 
         if (map != 2) {
           auto upscaleBy2 = [&](const T *src, T *dst) {
@@ -271,14 +277,14 @@ public:
           upscaleBy2(dst, tmp2_2);
           upscaleBy2(msk, msk2);
 
-          markDirections2X<<<grids, blocks, 0, stream>>>(msk2, tmp2_2, tmp2);
-          filterDirMap2X<<<grids, blocks, 0, stream>>>(msk2, tmp2, dst2M);
-          expandDirMap2X<<<grids, blocks, 0, stream>>>(msk2, dst2M, tmp2);
-          fillGaps2X<<<grids, blocks, 0, stream>>>(msk2, tmp2, tmp2_3);
-          fillGaps2XStep2<<<grids, blocks, 0, stream>>>(msk2, tmp2, tmp2_3,
+          markDirections2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2_2, tmp2);
+          filterDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2, dst2M);
+          expandDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, dst2M, tmp2);
+          fillGaps2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2, tmp2_3);
+          fillGaps2XStep2<<<grids, blocks, 0, stream>>>(d, msk2, tmp2, tmp2_3,
                                                         dst2M);
-          fillGaps2X<<<grids, blocks, 0, stream>>>(msk2, dst2M, tmp2_3);
-          fillGaps2XStep2<<<grids, blocks, 0, stream>>>(msk2, dst2M, tmp2_3,
+          fillGaps2X<<<grids, blocks, 0, stream>>>(d, msk2, dst2M, tmp2_3);
+          fillGaps2XStep2<<<grids, blocks, 0, stream>>>(d, msk2, dst2M, tmp2_3,
                                                         tmp2);
 
           if (map != 3) {
@@ -291,16 +297,18 @@ public:
               try_cuda(cudaMemcpyAsync(dst2, dst2 + d_pitch / sizeof(T),
                                        width_bytes, cudaMemcpyDeviceToDevice,
                                        stream));
-            interpolateLattice<<<grids, blocks, 0, stream>>>(tmp2_2, tmp2,
+            interpolateLattice<<<grids, blocks, 0, stream>>>(d, tmp2_2, tmp2,
                                                              dst2);
 
             if (pp == 1) {
               try_cuda(cudaMemcpy2DAsync(tmp2_2, d_pitch, tmp2, d_pitch,
                                          width_bytes, height2x,
                                          cudaMemcpyDeviceToDevice, stream));
-              filterDirMap2X<<<grids, blocks, 0, stream>>>(msk2, tmp2, dst2M);
-              expandDirMap2X<<<grids, blocks, 0, stream>>>(msk2, dst2M, tmp2);
-              postProcess<<<grids, blocks, 0, stream>>>(tmp2, tmp2_2, dst2);
+              filterDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2,
+                                                           dst2M);
+              expandDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, dst2M,
+                                                           tmp2);
+              postProcess<<<grids, blocks, 0, stream>>>(d, tmp2, tmp2_2, dst2);
             } else if (pp != 0) {
               throw std::runtime_error("currently only pp == 1 is supported");
             }
@@ -331,7 +339,6 @@ public:
 };
 
 #define setup_kernel                                                           \
-  const EEDI2Param *d = reinterpret_cast<const EEDI2Param *>(d_buf);           \
   uint16_t width = d->width, height = d->height,                               \
            x = threadIdx.x + blockIdx.x * blockDim.x,                          \
            y = threadIdx.y + blockIdx.y * blockDim.y;                          \
@@ -364,7 +371,8 @@ public:
     arr[j] = t;                                                                \
   }
 
-template <typename T> __global__ void buildEdgeMask(const T *src, T *dst) {
+template <typename T>
+__global__ void buildEdgeMask(const EEDI2Param *d, const T *src, T *dst) {
   setup_kernel;
 
   auto srcp = line(src);
@@ -421,7 +429,8 @@ template <typename T> __global__ void buildEdgeMask(const T *src, T *dst) {
     out = peak;
 }
 
-template <typename T> __global__ void erode(const T *msk, T *dst) {
+template <typename T>
+__global__ void erode(const EEDI2Param *d, const T *msk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -460,7 +469,8 @@ template <typename T> __global__ void erode(const T *msk, T *dst) {
     out = 0;
 }
 
-template <typename T> __global__ void dilate(const T *msk, T *dst) {
+template <typename T>
+__global__ void dilate(const EEDI2Param *d, const T *msk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -500,7 +510,7 @@ template <typename T> __global__ void dilate(const T *msk, T *dst) {
 }
 
 template <typename T>
-__global__ void removeSmallHorzGaps(const T *msk, T *dst) {
+__global__ void removeSmallHorzGaps(const EEDI2Param *d, const T *msk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -525,7 +535,8 @@ __global__ void removeSmallHorzGaps(const T *msk, T *dst) {
 }
 
 template <typename T>
-__global__ void calcDirections(const T *src, const T *msk, T *dst) {
+__global__ void calcDirections(const EEDI2Param *d, const T *src, const T *msk,
+                               T *dst) {
   setup_kernel;
 
   auto srcp = line(src);
@@ -682,7 +693,8 @@ __global__ void calcDirections(const T *src, const T *msk, T *dst) {
 }
 
 template <typename T>
-__global__ void filterDirMap(const T *msk, const T *dmsk, T *dst) {
+__global__ void filterDirMap(const EEDI2Param *d, const T *msk, const T *dmsk,
+                             T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -779,7 +791,8 @@ __global__ void filterDirMap(const T *msk, const T *dmsk, T *dst) {
 }
 
 template <typename T>
-__global__ void expandDirMap(const T *msk, const T *dmsk, T *dst) {
+__global__ void expandDirMap(const EEDI2Param *d, const T *msk, const T *dmsk,
+                             T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -862,7 +875,8 @@ __global__ void expandDirMap(const T *msk, const T *dmsk, T *dst) {
 }
 
 template <typename T>
-__global__ void filterMap(const T *msk, const T *dmsk, T *dst) {
+__global__ void filterMap(const EEDI2Param *d, const T *msk, const T *dmsk,
+                          T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -934,7 +948,8 @@ __global__ void filterMap(const T *msk, const T *dmsk, T *dst) {
 }
 
 template <typename T>
-__global__ void markDirections2X(const T *msk, const T *dmsk, T *dst) {
+__global__ void markDirections2X(const EEDI2Param *d, const T *msk,
+                                 const T *dmsk, T *dst) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -1017,7 +1032,8 @@ __global__ void markDirections2X(const T *msk, const T *dmsk, T *dst) {
 }
 
 template <typename T>
-__global__ void filterDirMap2X(const T *msk, const T *dmsk, T *dst) {
+__global__ void filterDirMap2X(const EEDI2Param *d, const T *msk, const T *dmsk,
+                               T *dst) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -1120,7 +1136,8 @@ __global__ void filterDirMap2X(const T *msk, const T *dmsk, T *dst) {
 }
 
 template <typename T>
-__global__ void expandDirMap2X(const T *msk, const T *dmsk, T *dst) {
+__global__ void expandDirMap2X(const EEDI2Param *d, const T *msk, const T *dmsk,
+                               T *dst) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -1217,7 +1234,8 @@ __global__ void expandDirMap2X(const T *msk, const T *dmsk, T *dst) {
 }
 
 template <typename T>
-__global__ void fillGaps2X(const T *msk, const T *dmsk, T *tmp) {
+__global__ void fillGaps2X(const EEDI2Param *d, const T *msk, const T *dmsk,
+                           T *tmp) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -1312,8 +1330,8 @@ __global__ void fillGaps2X(const T *msk, const T *dmsk, T *tmp) {
 }
 
 template <typename T>
-__global__ void fillGaps2XStep2(const T *msk, const T *dmsk, const T *tmp,
-                                T *dst) {
+__global__ void fillGaps2XStep2(const EEDI2Param *d, const T *msk,
+                                const T *dmsk, const T *tmp, T *dst) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -1370,7 +1388,8 @@ __global__ void fillGaps2XStep2(const T *msk, const T *dmsk, const T *tmp,
 }
 
 template <typename T>
-__global__ void interpolateLattice(const T *omsk, T *dmsk, T *dst) {
+__global__ void interpolateLattice(const EEDI2Param *d, const T *omsk, T *dmsk,
+                                   T *dst) {
   setup_kernel2x;
 
   auto omskp = lineOff(omsk, -1);
@@ -1514,7 +1533,8 @@ __global__ void interpolateLattice(const T *omsk, T *dmsk, T *dst) {
 }
 
 template <typename T>
-__global__ void postProcess(const T *nmsk, const T *omsk, T *dst) {
+__global__ void postProcess(const EEDI2Param *d, const T *nmsk, const T *omsk,
+                            T *dst) {
   setup_kernel2x;
 
   auto nmskp = line(nmsk);
@@ -1568,11 +1588,12 @@ const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason,
 template <typename T>
 void VS_CC eedi2Free(void *instanceData, VSCore *_core, const VSAPI *vsapi) {
   using EEDI2Item = std::pair<EEDI2Instance<T>, std::mutex>;
-  auto num_streams = static_cast<unsigned *>(instanceData)[0];
-  auto ds =
-      reinterpret_cast<EEDI2Item *>(static_cast<unsigned *>(instanceData) + 1);
+  auto vd = static_cast<unsigned *>(instanceData);
+  auto num_streams = vd[0];
+  auto ds = reinterpret_cast<EEDI2Item *>(vd + 1);
   for (unsigned i = 0; i < num_streams; ++i)
-    delete (ds + i);
+    (ds + i)->~EEDI2Item();
+  operator delete[](vd);
 }
 
 template <typename T>
@@ -1580,12 +1601,12 @@ void eedi2CreateInner(const VSMap *in, VSMap *out, const VSAPI *vsapi,
                       VSCore *core) {
   try {
     int err;
-    auto num_streams =
-        gsl::narrow<unsigned>(vsapi->propGetInt(in, "num_streams", 0, &err));
+    auto num_streams = vsapi->propGetInt(in, "num_streams", 0, &err);
     if (err)
       num_streams = 4;
-    if (num_streams == 0)
-      throw std::invalid_argument("num_streams must greater than 0");
+    if (num_streams <= 0 || num_streams > 32)
+      throw std::invalid_argument(
+          "num_streams must greater than 0 and less or equal to 32");
 
     using EEDI2Item = std::pair<EEDI2Instance<T>, std::mutex>;
 
@@ -1595,11 +1616,11 @@ void eedi2CreateInner(const VSMap *in, VSMap *out, const VSAPI *vsapi,
     auto ds = reinterpret_cast<EEDI2Item *>(static_cast<unsigned *>(vd) + 1);
 
     new (ds)
-        EEDI2Item(std::piecewise_construct, std::forward_as_tuple(in, vsapi),
+        EEDI2Item(std::piecewise_construct, std::forward_as_tuple(0, in, vsapi),
                   std::forward_as_tuple());
     for (unsigned i = 1; i < num_streams; ++i) {
       new (ds + i) EEDI2Item(std::piecewise_construct,
-                             std::forward_as_tuple(ds->first, vsapi),
+                             std::forward_as_tuple(i, ds->first, vsapi),
                              std::forward_as_tuple());
     }
 
