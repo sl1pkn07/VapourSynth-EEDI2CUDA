@@ -86,6 +86,8 @@ template <typename T> class EEDI2Instance {
   uint8_t map, pp, field, fieldS;
   uint32_t d_pitch;
 
+  bool use_cuda_graph;
+
   unsigned instanceId;
 
 public:
@@ -155,6 +157,8 @@ private:
 
     map = numeric_cast<uint8_t>(propGetIntDefault("map", 0));
     pp = numeric_cast<uint8_t>(propGetIntDefault("pp", 1));
+
+    use_cuda_graph = !!propGetIntDefault("use_cuda_graph", 0);
 
     uint16_t nt = numeric_cast<uint8_t>(propGetIntDefault("nt", 50));
 
@@ -256,7 +260,7 @@ public:
         vsapi->freeFrame};
 
     for (unsigned step = 1; step <= 3; ++step) {
-      if (step == 2 && !graph) {
+      if (use_cuda_graph && step == 2 && !graph) {
         try_cuda(
             cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
       }
@@ -420,7 +424,7 @@ public:
           try_cuda(cudaGraphLaunch(graph, stream));
         }
       }
-      if (step == 2 && !graph) {
+      if (use_cuda_graph && step == 2 && !graph) {
         cudaGraph_t capture;
         try_cuda(cudaStreamEndCapture(stream, &capture));
         try_cuda(cudaGraphInstantiate(&graph, capture, nullptr, nullptr, 0));
@@ -1799,6 +1803,7 @@ VapourSynthPluginInit(VSConfigPlugin configFunc,
                "map:int:opt;"
                "nt:int:opt;"
                "pp:int:opt;"
-               "num_streams:int:opt",
+               "num_streams:int:opt;"
+               "use_cuda_graph:int:opt",
                eedi2Create, nullptr, plugin);
 }
