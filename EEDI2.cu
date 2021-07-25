@@ -69,8 +69,8 @@ template <typename T> class EEDI2Instance {
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
   const VSVideoInfo *vi;
   std::unique_ptr<VSVideoInfo> vi2;
-  cudaStream_t stream;
   EEDI2Param param;
+  cudaStream_t stream;
   T *dst, *msk, *tmp, *src;
   T *dst2, *dst2M, *tmp2, *tmp2_2, *tmp2_3, *msk2;
 
@@ -83,6 +83,22 @@ public:
     initParams(in, vsapi);
     initCuda();
   }
+
+  EEDI2Instance(const EEDI2Instance& other, const VSAPI *vsapi)
+      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode),
+        vi(other.vi),
+        vi2(std::make_unique<VSVideoInfo>(*other.vi2)),
+        param(other.param),
+        map(other.map),
+        pp(other.pp),
+        field(other.field),
+        fieldS(other.fieldS),
+        d_pitch(other.d_pitch)
+  {
+    initCuda();
+  }
+
+  EEDI2Instance(EEDI2Instance&& other) = default;
 
   ~EEDI2Instance() {
     try_cuda(cudaFree(dst));
