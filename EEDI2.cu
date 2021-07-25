@@ -378,7 +378,7 @@ public:
       if (!items[i].second.test_and_set())
         return items[i].first;
     }
-    std::terminate();
+    assert(0);
   }
 
   void releaseInstance(const EEDI2Instance<T> &instance) {
@@ -386,6 +386,7 @@ public:
     for (unsigned i = 0; i < num_streams; ++i) {
       if (&instance == &items[i].first) {
         items[i].second.clear();
+        break;
       }
     }
     semaphore.post();
@@ -406,11 +407,13 @@ public:
     new (items) EEDI2Item(std::piecewise_construct,
                           std::forward_as_tuple(num_instances++, in, vsapi),
                           std::forward_as_tuple());
+    items[0].second.clear();
     for (unsigned i = 1; i < num_streams; ++i) {
       new (items + i) EEDI2Item(
           std::piecewise_construct,
           std::forward_as_tuple(num_instances++, data->firstInstance(), vsapi),
           std::forward_as_tuple());
+      items[i].second.clear();
     }
 
     if (num_instances > 32)
