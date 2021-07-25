@@ -22,9 +22,11 @@ target_compile_options(EEDI2CUDA PRIVATE
     --fmad=true
     --Wdefault-stream-launch
     --Wno-deprecated-gpu-targets
-    --expt-relaxed-constexpr)
+    --expt-relaxed-constexpr
+    --display-error-number
+    -diag-suppress 69,177,186,830)
 if(MSVC)
-    target_compile_options(EEDI2CUDA PRIVATE "-Xcompiler=/W4 /wd4100 /wd4297 /wd4458")
+    target_compile_options(EEDI2CUDA PRIVATE "-Xcompiler=/W4 /wd4100 /wd4297 /wd4458 /wd4291")
 else()
     target_compile_options(EEDI2CUDA PRIVATE "-Xcompiler=-Wall -Wno-terminate")
 endif()

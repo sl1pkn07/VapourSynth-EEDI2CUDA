@@ -26,6 +26,10 @@ class CUDAError : public std::runtime_error {
     }                                                                                                                  \
   } while (0)
 
+[[ noreturn ]] void unreachable() {
+  assert(false);
+}
+
 template <typename T> __global__ void buildEdgeMask(const T *src, T *dst);
 template <typename T> __global__ void erode(const T *msk, T *dst);
 template <typename T> __global__ void dilate(const T *msk, T *dst);
@@ -340,7 +344,7 @@ public:
       if (!items[i].second.test_and_set())
         return items[i].first;
     }
-    assert(0);
+    unreachable();
   }
 
   void releaseInstance(const EEDI2Instance<T> &instance) {
@@ -364,7 +368,7 @@ public:
     if (num_streams <= 0 || num_streams > 32)
       throw std::invalid_argument("num_streams must greater than 0 and less or equal to 32");
     auto *data = static_cast<EEDI2Data *>(::operator new(sizeof(EEDI2Data) + sizeof(EEDI2Item) * num_streams));
-    data->num_streams = num_streams;
+    data->num_streams = static_cast<unsigned>(num_streams);
     auto items = data->items();
     new (items)
         EEDI2Item(std::piecewise_construct, std::forward_as_tuple(num_instances++, in, vsapi), std::forward_as_tuple());
