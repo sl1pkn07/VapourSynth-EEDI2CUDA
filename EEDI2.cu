@@ -22,7 +22,7 @@ class CUDAError : public std::runtime_error {
   do {                                                                         \
     cudaError_t __err = expr;                                                  \
     if (__err != cudaSuccess) {                                                \
-      throw CUDAError(cudaGetErrorString(__err));                              \
+      throw CUDAError("'"s + #expr + " failed: " + cudaGetErrorString(__err)); \
     }                                                                          \
   } while (0)
 
