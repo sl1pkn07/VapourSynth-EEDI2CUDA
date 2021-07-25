@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <memory>
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
@@ -84,21 +85,15 @@ public:
     initCuda();
   }
 
-  EEDI2Instance(const EEDI2Instance& other, const VSAPI *vsapi)
+  EEDI2Instance(const EEDI2Instance &other, const VSAPI *vsapi)
       : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode),
-        vi(other.vi),
-        vi2(std::make_unique<VSVideoInfo>(*other.vi2)),
-        param(other.param),
-        map(other.map),
-        pp(other.pp),
-        field(other.field),
-        fieldS(other.fieldS),
-        d_pitch(other.d_pitch)
-  {
+        vi(other.vi), vi2(std::make_unique<VSVideoInfo>(*other.vi2)),
+        param(other.param), map(other.map), pp(other.pp), field(other.field),
+        fieldS(other.fieldS), d_pitch(other.d_pitch) {
     initCuda();
   }
 
-  EEDI2Instance(EEDI2Instance&& other) = default;
+  EEDI2Instance(EEDI2Instance &&other) = default;
 
   ~EEDI2Instance() {
     try_cuda(cudaFree(dst));
@@ -198,9 +193,7 @@ private:
   }
 
 public:
-  void initNode(VSNode *node, const VSAPI *vsapi) {
-    vsapi->setVideoInfo(vi2.get(), 1, node);
-  }
+  const VSVideoInfo *getOutputVI() const { return vi2.get(); }
 
   VSFrameRef *getFrame(int n, int activationReason, VSFrameContext *frameCtx,
                        VSCore *core, const VSAPI *vsapi) {
@@ -232,7 +225,7 @@ public:
       auto h_dst = vsapi->getWritePtr(dst_frame.get(), plane);
       auto d_src = src;
       T *d_dst;
-      auto d_pitch = this -> d_pitch;
+      auto d_pitch = this->d_pitch;
       int dst_height;
 
       param.field = static_cast<uint8_t>(field);
@@ -1542,8 +1535,11 @@ __global__ void postProcess(const T *nmsk, const T *omsk, T *dst) {
 template <typename T>
 void VS_CC eedi2Init(VSMap *_in, VSMap *_out, void **instanceData, VSNode *node,
                      VSCore *_core, const VSAPI *vsapi) {
-  auto d = static_cast<EEDI2Instance<T> *>(*instanceData);
-  d->initNode(node, vsapi);
+  using EEDI2Item = std::pair<EEDI2Instance<T>, std::mutex>;
+  auto &d =
+      reinterpret_cast<EEDI2Item *>(static_cast<unsigned *>(*instanceData) + 1)
+          ->first;
+  vsapi->setVideoInfo(d.getOutputVI(), 1, node);
 }
 
 template <typename T>
@@ -1551,9 +1547,18 @@ const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason,
                                       void **instanceData, void **_frameData,
                                       VSFrameContext *frameCtx, VSCore *core,
                                       const VSAPI *vsapi) {
-  auto d = static_cast<EEDI2Instance<T> *>(*instanceData);
+  using EEDI2Item = std::pair<EEDI2Instance<T>, std::mutex>;
+  auto num_streams = static_cast<unsigned *>(*instanceData)[0];
+  auto ds =
+      reinterpret_cast<EEDI2Item *>(static_cast<unsigned *>(*instanceData) + 1);
+  unsigned selected = 0;
+  if (activationReason == arAllFramesReady) {
+    selected = rand() % num_streams;
+  }
+  std::lock_guard<std::mutex> l(ds[selected].second);
+  auto &d = ds[selected].first;
   try {
-    return d->getFrame(n, activationReason, frameCtx, core, vsapi);
+    return d.getFrame(n, activationReason, frameCtx, core, vsapi);
   } catch (const std::exception &exc) {
     vsapi->setFilterError(("EEDI2CUDA: "s + exc.what()).c_str(), frameCtx);
     return nullptr;
@@ -1562,17 +1567,44 @@ const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason,
 
 template <typename T>
 void VS_CC eedi2Free(void *instanceData, VSCore *_core, const VSAPI *vsapi) {
-  auto d = static_cast<EEDI2Instance<T> *>(instanceData);
-  delete d;
+  using EEDI2Item = std::pair<EEDI2Instance<T>, std::mutex>;
+  auto num_streams = static_cast<unsigned *>(instanceData)[0];
+  auto ds =
+      reinterpret_cast<EEDI2Item *>(static_cast<unsigned *>(instanceData) + 1);
+  for (unsigned i = 0; i < num_streams; ++i)
+    delete (ds + i);
 }
 
 template <typename T>
 void eedi2CreateInner(const VSMap *in, VSMap *out, const VSAPI *vsapi,
                       VSCore *core) {
   try {
+    int err;
+    auto num_streams =
+        gsl::narrow<unsigned>(vsapi->propGetInt(in, "num_streams", 0, &err));
+    if (err)
+      num_streams = 4;
+    if (num_streams == 0)
+      throw std::invalid_argument("num_streams must greater than 0");
+
+    using EEDI2Item = std::pair<EEDI2Instance<T>, std::mutex>;
+
+    auto vd = operator new[](sizeof(num_streams) +
+                             num_streams * sizeof(EEDI2Item));
+    static_cast<unsigned *>(vd)[0] = num_streams;
+    auto ds = reinterpret_cast<EEDI2Item *>(static_cast<unsigned *>(vd) + 1);
+
+    new (ds)
+        EEDI2Item(std::piecewise_construct, std::forward_as_tuple(in, vsapi),
+                  std::forward_as_tuple());
+    for (unsigned i = 1; i < num_streams; ++i) {
+      new (ds + i) EEDI2Item(std::piecewise_construct,
+                             std::forward_as_tuple(ds->first, vsapi),
+                             std::forward_as_tuple());
+    }
+
     vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>,
-                        eedi2Free<T>, fmParallelRequests, 0,
-                        new EEDI2Instance<T>(in, vsapi), core);
+                        eedi2Free<T>, fmParallel, 0, vd, core);
   } catch (const std::exception &exc) {
     vsapi->setError(out, ("EEDI2CUDA: "s + exc.what()).c_str());
     return;
@@ -1606,6 +1638,7 @@ VapourSynthPluginInit(VSConfigPlugin configFunc,
                "maxd:int:opt;"
                "map:int:opt;"
                "nt:int:opt;"
-               "pp:int:opt;",
+               "pp:int:opt;"
+               "num_streams:int:opt",
                eedi2Create, nullptr, plugin);
 }
