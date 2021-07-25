@@ -76,8 +76,11 @@ template <typename T> class EEDI2Instance {
   std::unique_ptr<VSVideoInfo> vi2;
   EEDI2Param param;
   cudaStream_t stream;
+
   T *dst, *msk, *tmp, *src;
   T *dst2, *dst2M, *tmp2, *tmp2_2, *tmp2_3, *msk2;
+
+  T *h_src, *h_dst;
 
   uint8_t map, pp, field, fieldS;
   uint32_t d_pitch;
@@ -104,6 +107,8 @@ public:
   ~EEDI2Instance() {
     try_cuda(cudaFree(dst));
     try_cuda(cudaFree(dst2));
+    try_cuda(cudaFreeHost(h_src));
+    try_cuda(cudaFreeHost(h_dst));
     try_cuda(cudaStreamDestroy(stream));
   }
 
@@ -190,6 +195,7 @@ private:
     for (size_t i = 1; i < numMem; ++i)
       mem[i] = reinterpret_cast<T *>(reinterpret_cast<char *>(mem[i - 1]) +
                                      d_pitch * height);
+
     if (map == 0 || map == 3) {
       try_cuda(cudaMalloc(&dst2, d_pitch * height * numMem2x * 2));
       mem = &dst2;
@@ -197,6 +203,9 @@ private:
         mem[i] = reinterpret_cast<T *>(reinterpret_cast<char *>(mem[i - 1]) +
                                        d_pitch * height * 2);
     }
+
+    try_cuda(cudaHostAlloc(&h_src, d_pitch * height, cudaHostAllocWriteCombined));
+    try_cuda(cudaHostAlloc(&h_dst, d_pitch * height * (map == 0 || map == 3 ? 2 : 1), cudaHostAllocDefault));
   }
 
 public:
@@ -226,10 +235,10 @@ public:
       auto width = vsapi->getFrameWidth(src_frame.get(), plane);
       auto height = vsapi->getFrameHeight(src_frame.get(), plane);
       auto height2x = height * 2;
-      auto h_pitch = vsapi->getStride(src_frame.get(), plane);
+      auto s_pitch = vsapi->getStride(src_frame.get(), plane);
       auto width_bytes = width * vi->format->bytesPerSample;
-      auto h_src = vsapi->getReadPtr(src_frame.get(), plane);
-      auto h_dst = vsapi->getWritePtr(dst_frame.get(), plane);
+      auto s_src = vsapi->getReadPtr(src_frame.get(), plane);
+      auto s_dst = vsapi->getWritePtr(dst_frame.get(), plane);
       auto d_src = src;
       T *d_dst;
       auto d_pitch = this->d_pitch;
@@ -247,7 +256,9 @@ public:
       try_cuda(cudaGetSymbolAddress(reinterpret_cast<void **>(&d), d_buf));
       d += instanceId;
 
-      try_cuda(cudaMemcpy2DAsync(d_src, d_pitch, h_src, h_pitch, width_bytes,
+      try_cuda(cudaMemcpy2DAsync(h_src, d_pitch, s_src, s_pitch, width_bytes,
+                                 height, cudaMemcpyHostToHost, stream));
+      try_cuda(cudaMemcpy2DAsync(d_src, d_pitch, h_src, d_pitch, width_bytes,
                                  height, cudaMemcpyHostToDevice, stream));
       try_cuda(cudaMemcpyToSymbolAsync(d_buf, &param, sizeof(EEDI2Param),
                                        sizeof(EEDI2Param) * instanceId,
@@ -335,8 +346,10 @@ public:
         d_dst = dst;
         dst_height = height;
       }
-      try_cuda(cudaMemcpy2DAsync(h_dst, h_pitch, d_dst, d_pitch, width_bytes,
+      try_cuda(cudaMemcpy2DAsync(h_dst, d_pitch, d_dst, d_pitch, width_bytes,
                                  dst_height, cudaMemcpyDeviceToHost, stream));
+      try_cuda(cudaMemcpy2DAsync(s_dst, s_pitch, h_dst, d_pitch, width_bytes,
+                                 dst_height, cudaMemcpyHostToHost, stream));
       try_cuda(cudaStreamSynchronize(stream));
     }
 
