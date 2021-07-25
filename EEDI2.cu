@@ -63,7 +63,7 @@ struct EEDI2Param {
   uint8_t estr, dstr, maxd;
   uint8_t subSampling;
 };
-__constant__ char d_buf[sizeof(EEDI2Param) * 32];
+__constant__ char d_buf[sizeof(EEDI2Param) * 64];
 __constant__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10,
                                11, 11, 12, 12, 12, 12, 12, 12, 12, 12, 12,
                                12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};
@@ -76,6 +76,7 @@ template <typename T> class EEDI2Instance {
   std::unique_ptr<VSVideoInfo> vi2;
   EEDI2Param param;
   cudaStream_t stream;
+  cudaGraphExec_t graph = nullptr;
 
   T *dst, *msk, *tmp, *src;
   T *dst2, *dst2M, *tmp2, *tmp2_2, *tmp2_3, *msk2;
@@ -114,6 +115,8 @@ public:
     try_cuda(cudaFreeHost(h_dst[1]));
     try_cuda(cudaFreeHost(h_dst[2]));
     try_cuda(cudaStreamDestroy(stream));
+    if (graph)
+      try_cuda(cudaGraphExecDestroy(graph));
   }
 
 private:
@@ -252,150 +255,179 @@ public:
                              src_frame.get(), core),
         vsapi->freeFrame};
 
-    for (int plane = 0; plane < vi->format->numPlanes; ++plane) {
+    for (unsigned step = 1; step <= 3; ++step) {
+      if (step == 2 && !graph) {
+        try_cuda(
+            cudaStreamBeginCapture(stream, cudaStreamCaptureModeThreadLocal));
+      }
+      for (int plane = 0; plane < vi->format->numPlanes; ++plane) {
 
-      auto width = vsapi->getFrameWidth(src_frame.get(), plane);
-      auto height = vsapi->getFrameHeight(src_frame.get(), plane);
-      auto height2x = height * 2;
-      auto s_pitch = vsapi->getStride(src_frame.get(), plane);
-      auto width_bytes = width * vi->format->bytesPerSample;
-      auto s_src = vsapi->getReadPtr(src_frame.get(), plane);
-      auto s_dst = vsapi->getWritePtr(dst_frame.get(), plane);
-      T *d_dst;
-      int dst_height;
+        auto width = vsapi->getFrameWidth(src_frame.get(), plane);
+        auto height = vsapi->getFrameHeight(src_frame.get(), plane);
+        auto height2x = height * 2;
+        auto s_pitch = vsapi->getStride(src_frame.get(), plane);
+        auto width_bytes = width * vi->format->bytesPerSample;
+        auto s_src = vsapi->getReadPtr(src_frame.get(), plane);
+        auto s_dst = vsapi->getWritePtr(dst_frame.get(), plane);
 
-      param.field = static_cast<uint8_t>(field);
-      param.width = static_cast<uint16_t>(width);
-      param.height = static_cast<uint16_t>(height);
-      auto subSampling = param.subSampling =
-          static_cast<uint8_t>(plane ? vi->format->subSamplingW : 0);
-      auto d_pitch = param.d_pitch = this->d_pitch >> param.subSampling;
+        param.field = static_cast<uint8_t>(field);
+        param.width = static_cast<uint16_t>(width);
+        param.height = static_cast<uint16_t>(height);
+        auto subSampling = param.subSampling =
+            static_cast<uint8_t>(plane ? vi->format->subSamplingW : 0);
+        auto d_pitch = param.d_pitch = this->d_pitch >> param.subSampling;
 
-      auto O0 = [&](T *p, size_t sz) {
-        switch (plane) {
-        case 0:
-          return p;
-        case 1:
-          return p + sz;
-        case 2:
-          return p + sz + (sz >> subSampling >> subSampling);
-        default:
-          assert(0);
-        };
-      };
-      auto O = [&](T *p) { return O0(p, d_pitch * height); };
-      auto O2 = [&](T *p) { return O0(p, d_pitch * height2x); };
-
-      auto d_src = O(src);
-
-      EEDI2Param *d;
-      try_cuda(cudaGetSymbolAddress(reinterpret_cast<void **>(&d), d_buf));
-      d += instanceId;
-
-      auto h_src = this->h_src[plane];
-      try_cuda(cudaMemcpy2DAsync(h_src, d_pitch, s_src, s_pitch, width_bytes,
-                                 height, cudaMemcpyHostToHost, stream));
-      try_cuda(cudaMemcpy2DAsync(d_src, d_pitch, h_src, d_pitch, width_bytes,
-                                 height, cudaMemcpyHostToDevice, stream));
-      try_cuda(cudaMemcpyToSymbolAsync(d_buf, &param, sizeof(EEDI2Param),
-                                       sizeof(EEDI2Param) * instanceId,
-                                       cudaMemcpyHostToDevice, stream));
-
-      dim3 blocks = dim3(16, 8);
-      dim3 grids =
-          dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
-
-      buildEdgeMask<<<grids, blocks, 0, stream>>>(d, O(src), O(msk));
-      erode<<<grids, blocks, 0, stream>>>(d, O(msk), O(tmp));
-      dilate<<<grids, blocks, 0, stream>>>(d, O(tmp), O(msk));
-      erode<<<grids, blocks, 0, stream>>>(d, O(msk), O(tmp));
-      removeSmallHorzGaps<<<grids, blocks, 0, stream>>>(d, O(tmp), O(msk));
-
-      if (map != 1) {
-        calcDirections<<<grids, blocks, 0, stream>>>(d, O(src), O(msk), O(tmp));
-        filterDirMap<<<grids, blocks, 0, stream>>>(d, O(msk), O(tmp), O(dst));
-        expandDirMap<<<grids, blocks, 0, stream>>>(d, O(msk), O(dst), O(tmp));
-        filterMap<<<grids, blocks, 0, stream>>>(d, O(msk), O(tmp), O(dst));
-
-        if (map != 2) {
-          auto upscaleBy2 = [&](const T *src, T *dst) {
-            try_cuda(cudaMemcpy2DAsync(dst + d_pitch * (1 - field), d_pitch * 2,
-                                       src, d_pitch, width_bytes, height,
-                                       cudaMemcpyDeviceToDevice, stream));
+        auto O0 = [&](T *p, size_t sz) {
+          switch (plane) {
+          case 0:
+            return p;
+          case 1:
+            return p + sz;
+          case 2:
+            return p + sz + (sz >> subSampling >> subSampling);
+          default:
+            assert(0);
           };
-          try_cuda(cudaMemset2DAsync(O2(dst2), d_pitch, 0, width_bytes,
-                                     height2x, stream));
-          try_cuda(cudaMemset2DAsync(O2(tmp2), d_pitch, 255, width_bytes,
-                                     height2x, stream));
-          upscaleBy2(O(src), O2(dst2));
-          upscaleBy2(O(dst), O2(tmp2_2));
-          upscaleBy2(O(msk), O2(msk2));
+        };
+        auto O = [&](T *p) { return O0(p, d_pitch * height); };
+        auto O2 = [&](T *p) { return O0(p, d_pitch * height2x); };
 
-          markDirections2X<<<grids, blocks, 0, stream>>>(d, O2(msk2),
-                                                         O2(tmp2_2), O2(tmp2));
-          filterDirMap2X<<<grids, blocks, 0, stream>>>(d, O2(msk2), O2(tmp2),
-                                                       O2(dst2M));
-          expandDirMap2X<<<grids, blocks, 0, stream>>>(d, O2(msk2), O2(dst2M),
-                                                       O2(tmp2));
-          fillGaps2X<<<grids, blocks, 0, stream>>>(d, O2(msk2), O2(tmp2),
-                                                   O2(tmp2_3));
-          fillGaps2XStep2<<<grids, blocks, 0, stream>>>(d, O2(msk2), O2(tmp2),
-                                                        O2(tmp2_3), O2(dst2M));
-          fillGaps2X<<<grids, blocks, 0, stream>>>(d, O2(msk2), O2(dst2M),
-                                                   O2(tmp2_3));
-          fillGaps2XStep2<<<grids, blocks, 0, stream>>>(d, O2(msk2), O2(dst2M),
-                                                        O2(tmp2_3), O2(tmp2));
+        auto d_src = O(src);
 
-          if (map != 3) {
-            if (field)
-              try_cuda(cudaMemcpyAsync(
-                  O2(dst2) + d_pitch / sizeof(T) * (height2x - 1),
-                  O2(dst2) + d_pitch / sizeof(T) * (height2x - 2), width_bytes,
-                  cudaMemcpyDeviceToDevice, stream));
-            else
-              try_cuda(cudaMemcpyAsync(O2(dst2), O2(dst2) + d_pitch / sizeof(T),
-                                       width_bytes, cudaMemcpyDeviceToDevice,
-                                       stream));
-            interpolateLattice<<<grids, blocks, 0, stream>>>(
-                d, O2(tmp2_2), O2(tmp2), O2(dst2));
+        EEDI2Param *d;
+        try_cuda(cudaGetSymbolAddress(reinterpret_cast<void **>(&d), d_buf));
+        d += instanceId * 2 + !!plane;
 
-            if (pp == 1) {
-              try_cuda(cudaMemcpy2DAsync(O2(tmp2_2), d_pitch, O2(tmp2), d_pitch,
-                                         width_bytes, height2x,
-                                         cudaMemcpyDeviceToDevice, stream));
+        auto h_src = this->h_src[plane];
+        auto h_dst = this->h_dst[plane];
+
+        T *d_dst;
+        int dst_height;
+        if (map == 0) {
+          d_dst = O2(dst2);
+          dst_height = height2x;
+        } else if (map == 1) {
+          d_dst = O(msk);
+          dst_height = height;
+        } else if (map == 3) {
+          d_dst = O2(tmp2);
+          dst_height = height2x;
+        } else {
+          d_dst = O(dst);
+          dst_height = height;
+        }
+
+        if (step == 1) {
+          try_cuda(cudaMemcpy2DAsync(h_src, d_pitch, s_src, s_pitch,
+                                     width_bytes, height, cudaMemcpyHostToHost,
+                                     stream));
+          try_cuda(cudaMemcpyToSymbolAsync(d_buf, &param, sizeof(EEDI2Param),
+                                           sizeof(EEDI2Param) *
+                                               (instanceId * 2 + !!plane),
+                                           cudaMemcpyHostToDevice, stream));
+        } else if (step == 2 && !graph) {
+          try_cuda(cudaMemcpy2DAsync(d_src, d_pitch, h_src, d_pitch,
+                                     width_bytes, height,
+                                     cudaMemcpyHostToDevice, stream));
+
+          dim3 blocks = dim3(16, 8);
+          dim3 grids =
+              dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
+
+          buildEdgeMask<<<grids, blocks, 0, stream>>>(d, O(src), O(msk));
+          erode<<<grids, blocks, 0, stream>>>(d, O(msk), O(tmp));
+          dilate<<<grids, blocks, 0, stream>>>(d, O(tmp), O(msk));
+          erode<<<grids, blocks, 0, stream>>>(d, O(msk), O(tmp));
+          removeSmallHorzGaps<<<grids, blocks, 0, stream>>>(d, O(tmp), O(msk));
+
+          if (map != 1) {
+            calcDirections<<<grids, blocks, 0, stream>>>(d, O(src), O(msk),
+                                                         O(tmp));
+            filterDirMap<<<grids, blocks, 0, stream>>>(d, O(msk), O(tmp),
+                                                       O(dst));
+            expandDirMap<<<grids, blocks, 0, stream>>>(d, O(msk), O(dst),
+                                                       O(tmp));
+            filterMap<<<grids, blocks, 0, stream>>>(d, O(msk), O(tmp), O(dst));
+
+            if (map != 2) {
+              auto upscaleBy2 = [&](const T *src, T *dst) {
+                try_cuda(cudaMemcpy2DAsync(
+                    dst + d_pitch * (1 - field), d_pitch * 2, src, d_pitch,
+                    width_bytes, height, cudaMemcpyDeviceToDevice, stream));
+              };
+              try_cuda(cudaMemset2DAsync(O2(dst2), d_pitch, 0, width_bytes,
+                                         height2x, stream));
+              try_cuda(cudaMemset2DAsync(O2(tmp2), d_pitch, 255, width_bytes,
+                                         height2x, stream));
+              upscaleBy2(O(src), O2(dst2));
+              upscaleBy2(O(dst), O2(tmp2_2));
+              upscaleBy2(O(msk), O2(msk2));
+
+              markDirections2X<<<grids, blocks, 0, stream>>>(
+                  d, O2(msk2), O2(tmp2_2), O2(tmp2));
               filterDirMap2X<<<grids, blocks, 0, stream>>>(d, O2(msk2),
                                                            O2(tmp2), O2(dst2M));
               expandDirMap2X<<<grids, blocks, 0, stream>>>(d, O2(msk2),
                                                            O2(dst2M), O2(tmp2));
-              postProcess<<<grids, blocks, 0, stream>>>(d, O2(tmp2), O2(tmp2_2),
-                                                        O2(dst2));
-            } else if (pp != 0) {
-              throw std::runtime_error("currently only pp == 1 is supported");
+              fillGaps2X<<<grids, blocks, 0, stream>>>(d, O2(msk2), O2(tmp2),
+                                                       O2(tmp2_3));
+              fillGaps2XStep2<<<grids, blocks, 0, stream>>>(
+                  d, O2(msk2), O2(tmp2), O2(tmp2_3), O2(dst2M));
+              fillGaps2X<<<grids, blocks, 0, stream>>>(d, O2(msk2), O2(dst2M),
+                                                       O2(tmp2_3));
+              fillGaps2XStep2<<<grids, blocks, 0, stream>>>(
+                  d, O2(msk2), O2(dst2M), O2(tmp2_3), O2(tmp2));
+
+              if (map != 3) {
+                if (field)
+                  try_cuda(cudaMemcpyAsync(
+                      O2(dst2) + d_pitch / sizeof(T) * (height2x - 1),
+                      O2(dst2) + d_pitch / sizeof(T) * (height2x - 2),
+                      width_bytes, cudaMemcpyDeviceToDevice, stream));
+                else
+                  try_cuda(cudaMemcpyAsync(
+                      O2(dst2), O2(dst2) + d_pitch / sizeof(T), width_bytes,
+                      cudaMemcpyDeviceToDevice, stream));
+                interpolateLattice<<<grids, blocks, 0, stream>>>(
+                    d, O2(tmp2_2), O2(tmp2), O2(dst2));
+
+                if (pp == 1) {
+                  try_cuda(cudaMemcpy2DAsync(O2(tmp2_2), d_pitch, O2(tmp2),
+                                             d_pitch, width_bytes, height2x,
+                                             cudaMemcpyDeviceToDevice, stream));
+                  filterDirMap2X<<<grids, blocks, 0, stream>>>(
+                      d, O2(msk2), O2(tmp2), O2(dst2M));
+                  expandDirMap2X<<<grids, blocks, 0, stream>>>(
+                      d, O2(msk2), O2(dst2M), O2(tmp2));
+                  postProcess<<<grids, blocks, 0, stream>>>(
+                      d, O2(tmp2), O2(tmp2_2), O2(dst2));
+                } else if (pp != 0) {
+                  throw std::runtime_error(
+                      "currently only pp == 1 is supported");
+                }
+              }
             }
           }
+
+          try_cuda(cudaMemcpy2DAsync(h_dst, d_pitch, d_dst, d_pitch,
+                                     width_bytes, dst_height,
+                                     cudaMemcpyDeviceToHost, stream));
+        } else if (step == 3) {
+          try_cuda(cudaMemcpy2DAsync(s_dst, s_pitch, h_dst, d_pitch,
+                                     width_bytes, dst_height,
+                                     cudaMemcpyHostToHost, stream));
+        } else {
+          try_cuda(cudaGraphLaunch(graph, stream));
         }
       }
-
-      if (map == 0) {
-        d_dst = O2(dst2);
-        dst_height = height2x;
-      } else if (map == 1) {
-        d_dst = O(msk);
-        dst_height = height;
-      } else if (map == 3) {
-        d_dst = O2(tmp2);
-        dst_height = height2x;
-      } else {
-        d_dst = O(dst);
-        dst_height = height;
+      if (step == 2 && !graph) {
+        cudaGraph_t capture;
+        try_cuda(cudaStreamEndCapture(stream, &capture));
+        try_cuda(cudaGraphInstantiate(&graph, capture, nullptr, nullptr, 0));
+        try_cuda(cudaGraphDestroy(capture));
       }
-      auto h_dst = this->h_dst[plane];
-      try_cuda(cudaMemcpy2DAsync(h_dst, d_pitch, d_dst, d_pitch, width_bytes,
-                                 dst_height, cudaMemcpyDeviceToHost, stream));
-      try_cuda(cudaMemcpy2DAsync(s_dst, s_pitch, h_dst, d_pitch, width_bytes,
-                                 dst_height, cudaMemcpyHostToHost, stream));
-      try_cuda(cudaStreamSynchronize(stream));
     }
+    try_cuda(cudaStreamSynchronize(stream));
 
     return dst_frame.release();
   }
@@ -430,6 +462,7 @@ public:
     for (unsigned i = 0; i < num_streams; ++i) {
       if (&instance == &items[i].first) {
         items[i].second.clear();
+        break;
       }
     }
     semaphore.post();
@@ -450,11 +483,13 @@ public:
     new (items) EEDI2Item(std::piecewise_construct,
                           std::forward_as_tuple(num_instances++, in, vsapi),
                           std::forward_as_tuple());
+    items[0].second.clear();
     for (unsigned i = 1; i < num_streams; ++i) {
       new (items + i) EEDI2Item(
           std::piecewise_construct,
           std::forward_as_tuple(num_instances++, data->firstInstance(), vsapi),
           std::forward_as_tuple());
+      items[i].second.clear();
     }
 
     if (num_instances > 32)
