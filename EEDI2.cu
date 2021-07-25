@@ -7,7 +7,8 @@
 
 #include <stdint.h>
 
-#include <gsl/narrow>
+#include <boost/numeric/conversion/cast.hpp>
+#include <boost/sync/semaphore.hpp>
 
 #include <VSHelper.h>
 #include <VapourSynth.h>
@@ -109,7 +110,7 @@ public:
 private:
   void initParams(const VSMap *in, const VSAPI *vsapi) {
     using invalid_arg = std::invalid_argument;
-    using gsl::narrow;
+    using boost::numeric_cast;
 
     vi = vsapi->getVideoInfo(node.get());
     vi2 = std::make_unique<VSVideoInfo>(*vi);
@@ -128,20 +129,20 @@ private:
       return err ? def : ret;
     };
 
-    field = narrow<uint8_t>(vsapi->propGetInt(in, "field", 0, nullptr));
+    field = numeric_cast<uint8_t>(vsapi->propGetInt(in, "field", 0, nullptr));
 
-    param.mthresh = narrow<uint8_t>(propGetIntDefault("mthresh", 10));
-    param.lthresh = narrow<uint8_t>(propGetIntDefault("lthresh", 20));
-    param.vthresh = narrow<uint8_t>(propGetIntDefault("vthresh", 20));
+    param.mthresh = numeric_cast<uint8_t>(propGetIntDefault("mthresh", 10));
+    param.lthresh = numeric_cast<uint8_t>(propGetIntDefault("lthresh", 20));
+    param.vthresh = numeric_cast<uint8_t>(propGetIntDefault("vthresh", 20));
 
-    param.estr = narrow<uint8_t>(propGetIntDefault("estr", 2));
-    param.dstr = narrow<uint8_t>(propGetIntDefault("dstr", 4));
-    param.maxd = narrow<uint8_t>(propGetIntDefault("maxd", 24));
+    param.estr = numeric_cast<uint8_t>(propGetIntDefault("estr", 2));
+    param.dstr = numeric_cast<uint8_t>(propGetIntDefault("dstr", 4));
+    param.maxd = numeric_cast<uint8_t>(propGetIntDefault("maxd", 24));
 
-    map = narrow<uint8_t>(propGetIntDefault("map", 0));
-    pp = narrow<uint8_t>(propGetIntDefault("pp", 1));
+    map = numeric_cast<uint8_t>(propGetIntDefault("map", 0));
+    pp = numeric_cast<uint8_t>(propGetIntDefault("pp", 1));
 
-    uint16_t nt = narrow<uint8_t>(propGetIntDefault("nt", 50));
+    uint16_t nt = numeric_cast<uint8_t>(propGetIntDefault("nt", 50));
 
     if (field > 3)
       throw invalid_arg("field must be 0, 1, 2 or 3");
@@ -343,23 +344,41 @@ public:
   }
 };
 
-template<typename T>
-struct EEDI2Data {
+template <typename T> struct EEDI2Data {
   using EEDI2Item = std::pair<EEDI2Instance<T>, std::atomic_flag>;
+
+private:
   unsigned num_streams;
-//  std::counting_semaphore<32> semaphore;
+  boost::sync::semaphore semaphore;
 
-  EEDI2Data() {}
+  EEDI2Item *items() { return reinterpret_cast<EEDI2Item *>(this + 1); }
 
-  EEDI2Item *items() {
-    return reinterpret_cast<EEDI2Item*>(this + 1);
+public:
+  EEDI2Data() : semaphore(num_streams) {}
+
+  EEDI2Instance<T> &firstInstance() { return items()[0].first; }
+
+  EEDI2Instance<T> &acquireInstance() {
+    semaphore.wait();
+    auto items = this->items();
+    for (unsigned i = 0; i < num_streams; ++i) {
+      if (!items[i].second.test_and_set())
+        return items[i].first;
+    }
+    std::terminate();
   }
 
-  EEDI2Instance<T> &firstInstance() {
-    return items()[0].first;
+  void releaseInstance(const EEDI2Instance<T> &instance) {
+    auto items = this->items();
+    for (unsigned i = 0; i < num_streams; ++i) {
+      if (&instance == &items[i].first) {
+        items[i].second.clear();
+      }
+    }
+    semaphore.post();
   }
 
-  static void* operator new(size_t sz, const VSMap *in, const VSAPI *vsapi) {
+  static void *operator new(size_t sz, const VSMap *in, const VSAPI *vsapi) {
     int err;
     auto num_streams = vsapi->propGetInt(in, "num_streams", 0, &err);
     if (err)
@@ -367,14 +386,18 @@ struct EEDI2Data {
     if (num_streams <= 0 || num_streams > 32)
       throw std::invalid_argument(
           "num_streams must greater than 0 and less or equal to 32");
-    auto *data = static_cast<EEDI2Data*>(::operator new(sizeof(EEDI2Data) + sizeof(EEDI2Item) * num_streams));
+    auto *data = static_cast<EEDI2Data *>(
+        ::operator new(sizeof(EEDI2Data) + sizeof(EEDI2Item) * num_streams));
     data->num_streams = num_streams;
     auto items = data->items();
-    new (items) EEDI2Item(std::piecewise_construct, std::forward_as_tuple(num_instances++, in, vsapi),
-                                   std::forward_as_tuple());
+    new (items) EEDI2Item(std::piecewise_construct,
+                          std::forward_as_tuple(num_instances++, in, vsapi),
+                          std::forward_as_tuple());
     for (unsigned i = 1; i < num_streams; ++i) {
-      new (items + i) EEDI2Item(std::piecewise_construct, std::forward_as_tuple(num_instances++, data->firstInstance(), vsapi),
-                            std::forward_as_tuple());
+      new (items + i) EEDI2Item(
+          std::piecewise_construct,
+          std::forward_as_tuple(num_instances++, data->firstInstance(), vsapi),
+          std::forward_as_tuple());
     }
 
     if (num_instances > 32)
@@ -382,8 +405,8 @@ struct EEDI2Data {
     return data;
   }
 
-  static void operator delete(void* p) {
-    auto *data = static_cast<EEDI2Data*>(p);
+  static void operator delete(void *p) {
+    auto *data = static_cast<EEDI2Data *>(p);
     auto items = data->items();
     for (unsigned i = 0; i < data->num_streams; ++i)
       items[i].~EEDI2Item();
@@ -1608,7 +1631,7 @@ __global__ void postProcess(const EEDI2Param *d, const T *nmsk, const T *omsk,
 template <typename T>
 void VS_CC eedi2Init(VSMap *_in, VSMap *_out, void **instanceData, VSNode *node,
                      VSCore *_core, const VSAPI *vsapi) {
-  auto data = static_cast<EEDI2Data<T>*>(*instanceData);
+  auto data = static_cast<EEDI2Data<T> *>(*instanceData);
   vsapi->setVideoInfo(data->firstInstance().getOutputVI(), 1, node);
 }
 
@@ -1618,33 +1641,28 @@ const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason,
                                       VSFrameContext *frameCtx, VSCore *core,
                                       const VSAPI *vsapi) {
 
-//  auto data = static_cast<EEDI2Data<T>*>(*instanceData);
-//  data->semaphore.acquire();
+  auto data = static_cast<EEDI2Data<T> *>(*instanceData);
   const VSFrameRef *out = nullptr;
 
-//  try {
-//    for (auto &[d, flag] : std::span(data->items, data->num_streams)) {
-//      if (!flag.test_and_set()) {
-//        try {
-//          out = d.getFrame(n, activationReason, frameCtx, core, vsapi);
-//        } catch (...) {
-//          flag.clear();
-//          throw;
-//        }
-//        flag.clear();
-//      }
-//    }
-//  } catch (const std::exception &exc) {
-//    vsapi->setFilterError(("EEDI2CUDA: "s + exc.what()).c_str(), frameCtx);
-//  }
-//
-//  data->semaphore.release();
+  if (activationReason == arInitial) {
+    out = data->firstInstance().getFrame(n, activationReason, frameCtx, core,
+                                         vsapi);
+  } else {
+    auto &d = data->acquireInstance();
+    try {
+      out = d.getFrame(n, activationReason, frameCtx, core, vsapi);
+    } catch (const std::exception &exc) {
+      vsapi->setFilterError(("EEDI2CUDA: "s + exc.what()).c_str(), frameCtx);
+    }
+    data->releaseInstance(d);
+  }
+
   return out;
 }
 
 template <typename T>
 void VS_CC eedi2Free(void *instanceData, VSCore *_core, const VSAPI *vsapi) {
-  auto data = static_cast<EEDI2Data<T>*>(instanceData);
+  auto data = static_cast<EEDI2Data<T> *>(instanceData);
   delete data;
 }
 
@@ -1653,7 +1671,8 @@ void eedi2CreateInner(const VSMap *in, VSMap *out, const VSAPI *vsapi,
                       VSCore *core) {
   try {
     vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>,
-                        eedi2Free<T>, fmParallel, 0, new (in, vsapi) EEDI2Data<T>, core);
+                        eedi2Free<T>, fmParallel, 0,
+                        new (in, vsapi) EEDI2Data<T>, core);
   } catch (const std::exception &exc) {
     vsapi->setError(out, ("EEDI2CUDA: "s + exc.what()).c_str());
     return;
