@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -66,6 +67,8 @@ __constant__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10,
                                11, 11, 12, 12, 12, 12, 12, 12, 12, 12, 12,
                                12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};
 
+std::atomic_uint num_instances(0);
+
 template <typename T> class EEDI2Instance {
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
   const VSVideoInfo *vi;
@@ -76,7 +79,9 @@ template <typename T> class EEDI2Instance {
   T *dst2, *dst2M, *tmp2, *tmp2_2, *tmp2_3, *msk2;
 
   uint8_t map, pp, field, fieldS;
-  uint32_t d_pitch, instanceId;
+  uint32_t d_pitch;
+
+  unsigned instanceId;
 
 public:
   EEDI2Instance(const unsigned instanceId, const VSMap *in, const VSAPI *vsapi)
@@ -1616,13 +1621,16 @@ void eedi2CreateInner(const VSMap *in, VSMap *out, const VSAPI *vsapi,
     auto ds = reinterpret_cast<EEDI2Item *>(static_cast<unsigned *>(vd) + 1);
 
     new (ds)
-        EEDI2Item(std::piecewise_construct, std::forward_as_tuple(0, in, vsapi),
+        EEDI2Item(std::piecewise_construct, std::forward_as_tuple(num_instances++, in, vsapi),
                   std::forward_as_tuple());
     for (unsigned i = 1; i < num_streams; ++i) {
       new (ds + i) EEDI2Item(std::piecewise_construct,
-                             std::forward_as_tuple(i, ds->first, vsapi),
+                             std::forward_as_tuple(num_instances++, ds->first, vsapi),
                              std::forward_as_tuple());
     }
+
+    if (num_instances > 32)
+      throw std::runtime_error("too many streams");
 
     vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>,
                         eedi2Free<T>, fmParallel, 0, vd, core);
