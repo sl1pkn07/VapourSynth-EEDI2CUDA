@@ -204,8 +204,11 @@ private:
                                        d_pitch * height * 2);
     }
 
-    try_cuda(cudaHostAlloc(&h_src, d_pitch * height, cudaHostAllocWriteCombined));
-    try_cuda(cudaHostAlloc(&h_dst, d_pitch * height * (map == 0 || map == 3 ? 2 : 1), cudaHostAllocDefault));
+    try_cuda(
+        cudaHostAlloc(&h_src, d_pitch * height, cudaHostAllocWriteCombined));
+    try_cuda(cudaHostAlloc(&h_dst,
+                           d_pitch * height * (map == 0 || map == 3 ? 2 : 1),
+                           cudaHostAllocDefault));
   }
 
 public:
@@ -360,8 +363,9 @@ public:
 template <typename T> struct EEDI2Data {
   using EEDI2Item = std::pair<EEDI2Instance<T>, std::atomic_flag>;
 
-private:
   unsigned num_streams;
+
+private:
   boost::sync::semaphore semaphore;
 
   EEDI2Item *items() { return reinterpret_cast<EEDI2Item *>(this + 1); }
@@ -372,6 +376,8 @@ public:
   EEDI2Instance<T> &firstInstance() { return items()[0].first; }
 
   EEDI2Instance<T> &acquireInstance() {
+    if (num_streams == 1)
+      return firstInstance();
     semaphore.wait();
     auto items = this->items();
     for (unsigned i = 0; i < num_streams; ++i) {
@@ -382,6 +388,8 @@ public:
   }
 
   void releaseInstance(const EEDI2Instance<T> &instance) {
+    if (num_streams == 1)
+      return;
     auto items = this->items();
     for (unsigned i = 0; i < num_streams; ++i) {
       if (&instance == &items[i].first) {
@@ -396,7 +404,7 @@ public:
     int err;
     auto num_streams = vsapi->propGetInt(in, "num_streams", 0, &err);
     if (err)
-      num_streams = 4;
+      num_streams = 1;
     if (num_streams <= 0 || num_streams > 32)
       throw std::invalid_argument(
           "num_streams must greater than 0 and less or equal to 32");
@@ -1686,9 +1694,10 @@ template <typename T>
 void eedi2CreateInner(const VSMap *in, VSMap *out, const VSAPI *vsapi,
                       VSCore *core) {
   try {
-    vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>,
-                        eedi2Free<T>, fmParallel, 0,
-                        new (in, vsapi) EEDI2Data<T>, core);
+    auto d = new (in, vsapi) EEDI2Data<T>;
+    vsapi->createFilter(
+        in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>, eedi2Free<T>,
+        d->num_streams > 1 ? fmParallel : fmParallelRequests, 0, d, core);
   } catch (const std::exception &exc) {
     vsapi->setError(out, ("EEDI2CUDA: "s + exc.what()).c_str());
     return;
