@@ -1,9 +1,9 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
-#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 
 #include <stdint.h>
 
@@ -340,6 +340,54 @@ public:
     }
 
     return dst_frame.release();
+  }
+};
+
+template<typename T>
+struct EEDI2Data {
+  using EEDI2Item = std::pair<EEDI2Instance<T>, std::atomic_flag>;
+  unsigned num_streams;
+//  std::counting_semaphore<32> semaphore;
+
+  EEDI2Data() {}
+
+  EEDI2Item *items() {
+    return reinterpret_cast<EEDI2Item*>(this + 1);
+  }
+
+  EEDI2Instance<T> &firstInstance() {
+    return items()[0].first;
+  }
+
+  static void* operator new(size_t sz, const VSMap *in, const VSAPI *vsapi) {
+    int err;
+    auto num_streams = vsapi->propGetInt(in, "num_streams", 0, &err);
+    if (err)
+      num_streams = 4;
+    if (num_streams <= 0 || num_streams > 32)
+      throw std::invalid_argument(
+          "num_streams must greater than 0 and less or equal to 32");
+    auto *data = static_cast<EEDI2Data*>(::operator new(sizeof(EEDI2Data) + sizeof(EEDI2Item) * num_streams));
+    data->num_streams = num_streams;
+    auto items = data->items();
+    new (items) EEDI2Item(std::piecewise_construct, std::forward_as_tuple(num_instances++, in, vsapi),
+                                   std::forward_as_tuple());
+    for (unsigned i = 1; i < num_streams; ++i) {
+      new (items + i) EEDI2Item(std::piecewise_construct, std::forward_as_tuple(num_instances++, data->firstInstance(), vsapi),
+                            std::forward_as_tuple());
+    }
+
+    if (num_instances > 32)
+      throw std::runtime_error("too many streams");
+    return data;
+  }
+
+  static void operator delete(void* p) {
+    auto *data = static_cast<EEDI2Data*>(p);
+    auto items = data->items();
+    for (unsigned i = 0; i < data->num_streams; ++i)
+      items[i].~EEDI2Item();
+    ::operator delete(p);
   }
 };
 
@@ -1560,11 +1608,8 @@ __global__ void postProcess(const EEDI2Param *d, const T *nmsk, const T *omsk,
 template <typename T>
 void VS_CC eedi2Init(VSMap *_in, VSMap *_out, void **instanceData, VSNode *node,
                      VSCore *_core, const VSAPI *vsapi) {
-  using EEDI2Item = std::pair<EEDI2Instance<T>, std::mutex>;
-  auto &d =
-      reinterpret_cast<EEDI2Item *>(static_cast<unsigned *>(*instanceData) + 1)
-          ->first;
-  vsapi->setVideoInfo(d.getOutputVI(), 1, node);
+  auto data = static_cast<EEDI2Data<T>*>(*instanceData);
+  vsapi->setVideoInfo(data->firstInstance().getOutputVI(), 1, node);
 }
 
 template <typename T>
@@ -1572,68 +1617,43 @@ const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason,
                                       void **instanceData, void **_frameData,
                                       VSFrameContext *frameCtx, VSCore *core,
                                       const VSAPI *vsapi) {
-  using EEDI2Item = std::pair<EEDI2Instance<T>, std::mutex>;
-  auto num_streams = static_cast<unsigned *>(*instanceData)[0];
-  auto ds =
-      reinterpret_cast<EEDI2Item *>(static_cast<unsigned *>(*instanceData) + 1);
-  unsigned selected = 0;
-  if (activationReason == arAllFramesReady) {
-    selected = rand() % num_streams;
-  }
-  std::lock_guard<std::mutex> l(ds[selected].second);
-  auto &d = ds[selected].first;
-  try {
-    return d.getFrame(n, activationReason, frameCtx, core, vsapi);
-  } catch (const std::exception &exc) {
-    vsapi->setFilterError(("EEDI2CUDA: "s + exc.what()).c_str(), frameCtx);
-    return nullptr;
-  }
+
+//  auto data = static_cast<EEDI2Data<T>*>(*instanceData);
+//  data->semaphore.acquire();
+  const VSFrameRef *out = nullptr;
+
+//  try {
+//    for (auto &[d, flag] : std::span(data->items, data->num_streams)) {
+//      if (!flag.test_and_set()) {
+//        try {
+//          out = d.getFrame(n, activationReason, frameCtx, core, vsapi);
+//        } catch (...) {
+//          flag.clear();
+//          throw;
+//        }
+//        flag.clear();
+//      }
+//    }
+//  } catch (const std::exception &exc) {
+//    vsapi->setFilterError(("EEDI2CUDA: "s + exc.what()).c_str(), frameCtx);
+//  }
+//
+//  data->semaphore.release();
+  return out;
 }
 
 template <typename T>
 void VS_CC eedi2Free(void *instanceData, VSCore *_core, const VSAPI *vsapi) {
-  using EEDI2Item = std::pair<EEDI2Instance<T>, std::mutex>;
-  auto vd = static_cast<unsigned *>(instanceData);
-  auto num_streams = vd[0];
-  auto ds = reinterpret_cast<EEDI2Item *>(vd + 1);
-  for (unsigned i = 0; i < num_streams; ++i)
-    (ds + i)->~EEDI2Item();
-  operator delete[](vd);
+  auto data = static_cast<EEDI2Data<T>*>(instanceData);
+  delete data;
 }
 
 template <typename T>
 void eedi2CreateInner(const VSMap *in, VSMap *out, const VSAPI *vsapi,
                       VSCore *core) {
   try {
-    int err;
-    auto num_streams = vsapi->propGetInt(in, "num_streams", 0, &err);
-    if (err)
-      num_streams = 4;
-    if (num_streams <= 0 || num_streams > 32)
-      throw std::invalid_argument(
-          "num_streams must greater than 0 and less or equal to 32");
-
-    using EEDI2Item = std::pair<EEDI2Instance<T>, std::mutex>;
-
-    auto vd = operator new[](sizeof(num_streams) +
-                             num_streams * sizeof(EEDI2Item));
-    static_cast<unsigned *>(vd)[0] = num_streams;
-    auto ds = reinterpret_cast<EEDI2Item *>(static_cast<unsigned *>(vd) + 1);
-
-    new (ds)
-        EEDI2Item(std::piecewise_construct, std::forward_as_tuple(num_instances++, in, vsapi),
-                  std::forward_as_tuple());
-    for (unsigned i = 1; i < num_streams; ++i) {
-      new (ds + i) EEDI2Item(std::piecewise_construct,
-                             std::forward_as_tuple(num_instances++, ds->first, vsapi),
-                             std::forward_as_tuple());
-    }
-
-    if (num_instances > 32)
-      throw std::runtime_error("too many streams");
-
     vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>,
-                        eedi2Free<T>, fmParallel, 0, vd, core);
+                        eedi2Free<T>, fmParallel, 0, new (in, vsapi) EEDI2Data<T>, core);
   } catch (const std::exception &exc) {
     vsapi->setError(out, ("EEDI2CUDA: "s + exc.what()).c_str());
     return;
