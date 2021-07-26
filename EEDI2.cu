@@ -26,25 +26,7 @@ class CUDAError : public std::runtime_error {
     }                                                                                                                  \
   } while (0)
 
-[[ noreturn ]] void unreachable() {
-  assert(false);
-}
-
-template <typename T> __global__ void buildEdgeMask(const T *src, T *dst);
-template <typename T> __global__ void erode(const T *msk, T *dst);
-template <typename T> __global__ void dilate(const T *msk, T *dst);
-template <typename T> __global__ void removeSmallHorzGaps(const T *msk, T *dst);
-template <typename T> __global__ void calcDirections(const T *src, const T *msk, T *dst);
-template <typename T> __global__ void filterDirMap(const T *msk, const T *dmsk, T *dst);
-template <typename T> __global__ void expandDirMap(const T *msk, const T *dmsk, T *dst);
-template <typename T> __global__ void filterMap(const T *msk, const T *dmsk, T *dst);
-template <typename T> __global__ void markDirections2X(const T *msk, const T *dmsk, T *dst);
-template <typename T> __global__ void filterDirMap2X(const T *msk, const T *dmsk, T *dst);
-template <typename T> __global__ void expandDirMap2X(const T *msk, const T *dmsk, T *dst);
-template <typename T> __global__ void fillGaps2X(const T *msk, const T *dmsk, T *tmp);
-template <typename T> __global__ void fillGaps2XStep2(const T *msk, const T *dmsk, const T *tmp, T *dst);
-template <typename T> __global__ void interpolateLattice(const T *omsk, T *dmsk, T *dst);
-template <typename T> __global__ void postProcess(const T *nmsk, const T *omsk, T *dst);
+[[noreturn]] void unreachable() { assert(false); }
 
 struct EEDI2Param {
   uint32_t d_pitch;
@@ -55,9 +37,6 @@ struct EEDI2Param {
   uint8_t estr, dstr, maxd;
   uint8_t subSampling;
 };
-__constant__ char d_buf[sizeof(EEDI2Param) * 32];
-__constant__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12, 12, 12, 12,
-                               12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};
 
 std::atomic_uint num_instances(0);
 
@@ -65,7 +44,7 @@ template <typename T> class EEDI2Instance {
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
   const VSVideoInfo *vi;
   std::unique_ptr<VSVideoInfo> vi2;
-  EEDI2Param param;
+  EEDI2Param d;
   cudaStream_t stream;
 
   T *dst, *msk, *tmp, *src;
@@ -87,8 +66,8 @@ public:
 
   EEDI2Instance(const unsigned instanceId, const EEDI2Instance &other, const VSAPI *vsapi)
       : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi),
-        vi2(std::make_unique<VSVideoInfo>(*other.vi2)), param(other.param), map(other.map), pp(other.pp),
-        field(other.field), fieldS(other.fieldS), d_pitch(other.d_pitch), instanceId(instanceId) {
+        vi2(std::make_unique<VSVideoInfo>(*other.vi2)), d(other.d), map(other.map), pp(other.pp), field(other.field),
+        fieldS(other.fieldS), d_pitch(other.d_pitch), instanceId(instanceId) {
     initCuda();
   }
 
@@ -122,13 +101,13 @@ private:
 
     field = numeric_cast<uint8_t>(vsapi->propGetInt(in, "field", 0, nullptr));
 
-    param.mthresh = numeric_cast<uint8_t>(propGetIntDefault("mthresh", 10));
-    param.lthresh = numeric_cast<uint8_t>(propGetIntDefault("lthresh", 20));
-    param.vthresh = numeric_cast<uint8_t>(propGetIntDefault("vthresh", 20));
+    d.mthresh = numeric_cast<uint8_t>(propGetIntDefault("mthresh", 10));
+    d.lthresh = numeric_cast<uint8_t>(propGetIntDefault("lthresh", 20));
+    d.vthresh = numeric_cast<uint8_t>(propGetIntDefault("vthresh", 20));
 
-    param.estr = numeric_cast<uint8_t>(propGetIntDefault("estr", 2));
-    param.dstr = numeric_cast<uint8_t>(propGetIntDefault("dstr", 4));
-    param.maxd = numeric_cast<uint8_t>(propGetIntDefault("maxd", 24));
+    d.estr = numeric_cast<uint8_t>(propGetIntDefault("estr", 2));
+    d.dstr = numeric_cast<uint8_t>(propGetIntDefault("dstr", 4));
+    d.maxd = numeric_cast<uint8_t>(propGetIntDefault("maxd", 24));
 
     map = numeric_cast<uint8_t>(propGetIntDefault("map", 0));
     pp = numeric_cast<uint8_t>(propGetIntDefault("pp", 1));
@@ -137,7 +116,7 @@ private:
 
     if (field > 3)
       throw invalid_arg("field must be 0, 1, 2 or 3");
-    if (param.maxd < 1 || param.maxd > 29)
+    if (d.maxd < 1 || d.maxd > 29)
       throw invalid_arg("maxd must be between 1 and 29 (inclusive)");
     if (map > 3)
       throw invalid_arg("map must be 0, 1, 2 or 3");
@@ -153,15 +132,15 @@ private:
     if (map == 0 || map == 3)
       vi2->height *= 2;
 
-    param.mthresh *= param.mthresh;
-    param.vthresh *= 81;
+    d.mthresh *= d.mthresh;
+    d.vthresh *= 81;
 
     nt <<= sizeof(T) * 8 - 8;
-    param.nt4 = nt * 4;
-    param.nt7 = nt * 7;
-    param.nt8 = nt * 8;
-    param.nt13 = nt * 13;
-    param.nt19 = nt * 19;
+    d.nt4 = nt * 4;
+    d.nt7 = nt * 7;
+    d.nt8 = nt * 8;
+    d.nt13 = nt * 13;
+    d.nt19 = nt * 19;
   }
 
   void initCuda() {
@@ -223,21 +202,15 @@ public:
       auto d_pitch = this->d_pitch;
       int dst_height;
 
-      param.field = static_cast<uint8_t>(field);
-      param.width = static_cast<uint16_t>(width);
-      param.height = static_cast<uint16_t>(height);
-      param.subSampling = static_cast<uint8_t>(plane ? vi->format->subSamplingW : 0);
-      d_pitch >>= param.subSampling;
-      param.d_pitch = d_pitch;
-
-      EEDI2Param *d;
-      try_cuda(cudaGetSymbolAddress(reinterpret_cast<void **>(&d), d_buf));
-      d += instanceId;
+      d.field = static_cast<uint8_t>(field);
+      d.width = static_cast<uint16_t>(width);
+      d.height = static_cast<uint16_t>(height);
+      d.subSampling = static_cast<uint8_t>(plane ? vi->format->subSamplingW : 0);
+      d_pitch >>= d.subSampling;
+      d.d_pitch = d_pitch;
 
       try_cuda(cudaMemcpy2DAsync(h_src, d_pitch, s_src, s_pitch, width_bytes, height, cudaMemcpyHostToHost, stream));
       try_cuda(cudaMemcpy2DAsync(d_src, d_pitch, h_src, d_pitch, width_bytes, height, cudaMemcpyHostToDevice, stream));
-      try_cuda(cudaMemcpyToSymbolAsync(d_buf, &param, sizeof(EEDI2Param), sizeof(EEDI2Param) * instanceId,
-                                       cudaMemcpyHostToDevice, stream));
 
       dim3 blocks = dim3(16, 8);
       dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
@@ -395,25 +368,27 @@ public:
 };
 
 #define setup_kernel                                                                                                   \
-  uint16_t width = d->width, height = d->height, x = threadIdx.x + blockIdx.x * blockDim.x,                            \
+  uint16_t width = d.width, height = d.height, x = threadIdx.x + blockIdx.x * blockDim.x,                              \
            y = threadIdx.y + blockIdx.y * blockDim.y;                                                                  \
   constexpr T shift = sizeof(T) * 8 - 8, peak = std::numeric_limits<T>::max(), ten = 10 << shift,                      \
               twleve = 12 << shift, eight = 8 << shift, twenty = 20 << shift, fiveHundred = 500 << shift,              \
               three = 3 << shift, nine = 9 << shift;                                                                   \
   constexpr T shift2 = shift + 2, neutral = peak / 2;                                                                  \
+  constexpr int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12, 12, 12, 12,                      \
+                              12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};                         \
   if (x >= width || y >= height)                                                                                       \
   return
 
 #define setup_kernel2x                                                                                                 \
   setup_kernel;                                                                                                        \
   height *= 2;                                                                                                         \
-  y = d->field ? 2 * y + 1 : 2 * y
+  y = d.field ? 2 * y + 1 : 2 * y
 
 #define bounds_check3(value, lower, upper)                                                                             \
   if ((value) < (lower) || (value) >= (upper))                                                                         \
   return
 
-#define stride (d->d_pitch / sizeof(T))
+#define stride (d.d_pitch / sizeof(T))
 #define line(p) ((p) + stride * y)
 #define lineOff(p, off) ((p) + stride * (y + (off)))
 #define point(p) ((p)[stride * y + x])
@@ -425,7 +400,7 @@ public:
     arr[j] = t;                                                                                                        \
   }
 
-template <typename T> __global__ void buildEdgeMask(const EEDI2Param *d, const T *src, T *dst) {
+template <typename T> __global__ void buildEdgeMask(const EEDI2Param d, const T *src, T *dst) {
   setup_kernel;
 
   auto srcp = line(src);
@@ -454,24 +429,24 @@ template <typename T> __global__ void buildEdgeMask(const EEDI2Param *d, const T
                          (srcp[x + 1] >> shift) * (srcp[x + 1] >> shift) +
                          (srcpn[x - 1] >> shift) * (srcpn[x - 1] >> shift) + (srcpn[x] >> shift) * (srcpn[x] >> shift) +
                          (srcpn[x + 1] >> shift) * (srcpn[x + 1] >> shift);
-  if (9 * sumsq - sum * sum < d->vthresh)
+  if (9 * sumsq - sum * sum < d.vthresh)
     return;
 
   const unsigned Ix = std::abs(srcp[x + 1] - srcp[x - 1]) >> shift;
   const unsigned Iy =
       std::max({std::abs(srcpp[x] - srcpn[x]), std::abs(srcpp[x] - srcp[x]), std::abs(srcp[x] - srcpn[x])}) >> shift;
-  if (Ix * Ix + Iy * Iy >= d->mthresh) {
+  if (Ix * Ix + Iy * Iy >= d.mthresh) {
     out = peak;
     return;
   }
 
   const unsigned Ixx = std::abs(srcp[x - 1] - 2 * srcp[x] + srcp[x + 1]) >> shift;
   const unsigned Iyy = std::abs(srcpp[x] - 2 * srcp[x] + srcpn[x]) >> shift;
-  if (Ixx + Iyy >= d->lthresh)
+  if (Ixx + Iyy >= d.lthresh)
     out = peak;
 }
 
-template <typename T> __global__ void erode(const EEDI2Param *d, const T *msk, T *dst) {
+template <typename T> __global__ void erode(const EEDI2Param d, const T *msk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -506,11 +481,11 @@ template <typename T> __global__ void erode(const EEDI2Param *d, const T *msk, T
   if (mskpn[x + 1] == peak)
     count++;
 
-  if (count < d->estr)
+  if (count < d.estr)
     out = 0;
 }
 
-template <typename T> __global__ void dilate(const EEDI2Param *d, const T *msk, T *dst) {
+template <typename T> __global__ void dilate(const EEDI2Param d, const T *msk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -545,11 +520,11 @@ template <typename T> __global__ void dilate(const EEDI2Param *d, const T *msk, 
   if (mskpn[x + 1] == peak)
     count++;
 
-  if (count >= d->dstr)
+  if (count >= d.dstr)
     out = peak;
 }
 
-template <typename T> __global__ void removeSmallHorzGaps(const EEDI2Param *d, const T *msk, T *dst) {
+template <typename T> __global__ void removeSmallHorzGaps(const EEDI2Param d, const T *msk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -571,7 +546,7 @@ template <typename T> __global__ void removeSmallHorzGaps(const EEDI2Param *d, c
   }
 }
 
-template <typename T> __global__ void calcDirections(const EEDI2Param *d, const T *src, const T *msk, T *dst) {
+template <typename T> __global__ void calcDirections(const EEDI2Param d, const T *src, const T *msk, T *dst) {
   setup_kernel;
 
   auto srcp = line(src);
@@ -589,7 +564,7 @@ template <typename T> __global__ void calcDirections(const EEDI2Param *d, const 
   bounds_check3(x, 1, width - 1);
   bounds_check3(y, 1, height - 1);
 
-  const int maxd = d->maxd >> d->subSampling;
+  const int maxd = d.maxd >> d.subSampling;
 
   if (mskp[x] != peak || (mskp[x - 1] != peak && mskp[x + 1] != peak))
     return;
@@ -597,8 +572,8 @@ template <typename T> __global__ void calcDirections(const EEDI2Param *d, const 
   const int uStart = std::max(-x + 1, -maxd);
   const int uStop = std::min(width - 2 - x, maxd);
   const unsigned min0 = std::abs(srcp[x] - srcpn[x]) + std::abs(srcp[x] - srcpp[x]);
-  unsigned minA = std::min(d->nt19, min0 * 9);
-  unsigned minB = std::min(d->nt13, min0 * 6);
+  unsigned minA = std::min(d.nt19, min0 * 9);
+  unsigned minB = std::min(d.nt13, min0 * 6);
   unsigned minC = minA;
   unsigned minD = minB;
   unsigned minE = minB;
@@ -712,7 +687,7 @@ template <typename T> __global__ void calcDirections(const EEDI2Param *d, const 
   }
 }
 
-template <typename T> __global__ void filterDirMap(const EEDI2Param *d, const T *msk, const T *dmsk, T *dst) {
+template <typename T> __global__ void filterDirMap(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -807,7 +782,7 @@ template <typename T> __global__ void filterDirMap(const EEDI2Param *d, const T 
   out = static_cast<int>(static_cast<float>(sum + mid) / (count + 1) + 0.5f);
 }
 
-template <typename T> __global__ void expandDirMap(const EEDI2Param *d, const T *msk, const T *dmsk, T *dst) {
+template <typename T> __global__ void expandDirMap(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -888,7 +863,7 @@ template <typename T> __global__ void expandDirMap(const EEDI2Param *d, const T 
   out = static_cast<int>(static_cast<float>(sum + mid) / (count + 1) + 0.5f);
 }
 
-template <typename T> __global__ void filterMap(const EEDI2Param *d, const T *msk, const T *dmsk, T *dst) {
+template <typename T> __global__ void filterMap(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -956,7 +931,7 @@ template <typename T> __global__ void filterMap(const EEDI2Param *d, const T *ms
   }
 }
 
-template <typename T> __global__ void markDirections2X(const EEDI2Param *d, const T *msk, const T *dmsk, T *dst) {
+template <typename T> __global__ void markDirections2X(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -1034,7 +1009,7 @@ template <typename T> __global__ void markDirections2X(const EEDI2Param *d, cons
   }
 }
 
-template <typename T> __global__ void filterDirMap2X(const EEDI2Param *d, const T *msk, const T *dmsk, T *dst) {
+template <typename T> __global__ void filterDirMap2X(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -1135,7 +1110,7 @@ template <typename T> __global__ void filterDirMap2X(const EEDI2Param *d, const 
   out = static_cast<int>(static_cast<float>(sum + mid) / (count + 1) + 0.5f);
 }
 
-template <typename T> __global__ void expandDirMap2X(const EEDI2Param *d, const T *msk, const T *dmsk, T *dst) {
+template <typename T> __global__ void expandDirMap2X(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -1230,7 +1205,7 @@ template <typename T> __global__ void expandDirMap2X(const EEDI2Param *d, const 
   out = static_cast<int>(static_cast<float>(sum + mid) / (count + 1) + 0.5f);
 }
 
-template <typename T> __global__ void fillGaps2X(const EEDI2Param *d, const T *msk, const T *dmsk, T *tmp) {
+template <typename T> __global__ void fillGaps2X(const EEDI2Param d, const T *msk, const T *dmsk, T *tmp) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -1320,7 +1295,7 @@ template <typename T> __global__ void fillGaps2X(const EEDI2Param *d, const T *m
 }
 
 template <typename T>
-__global__ void fillGaps2XStep2(const EEDI2Param *d, const T *msk, const T *dmsk, const T *tmp, T *dst) {
+__global__ void fillGaps2XStep2(const EEDI2Param d, const T *msk, const T *dmsk, const T *tmp, T *dst) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -1376,7 +1351,7 @@ __global__ void fillGaps2XStep2(const EEDI2Param *d, const T *msk, const T *dmsk
   out = back + static_cast<unsigned>((x - 1 - u) * step + 0.5);
 }
 
-template <typename T> __global__ void interpolateLattice(const EEDI2Param *d, const T *omsk, T *dmsk, T *dst) {
+template <typename T> __global__ void interpolateLattice(const EEDI2Param d, const T *omsk, T *dmsk, T *dst) {
   setup_kernel2x;
 
   auto omskp = lineOff(omsk, -1);
@@ -1429,7 +1404,7 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param *d, co
       (dir - 2 < 0) ? std::max({-x + 1, dir - 2, -width + 2 + x}) : std::min({x - 1, dir - 2, width - 2 - x});
   const int uStop =
       (dir + 2 < 0) ? std::max({-x + 1, dir + 2, -width + 2 + x}) : std::min({x - 1, dir + 2, width - 2 - x});
-  unsigned min = d->nt8;
+  unsigned min = d.nt8;
   unsigned val = (dstp[x] + dstpnn[x] + 1) / 2;
 
   for (int u = uStart; u <= uStop; u++) {
@@ -1446,12 +1421,12 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param *d, co
       const unsigned diff2 = std::abs(dstp[x + u / 2 - 1] - dstpnn[x - u / 2 - 1]) +
                              std::abs(dstp[x + u / 2] - dstpnn[x - u / 2]) +
                              std::abs(dstp[x + u / 2 + 1] - dstpnn[x - u / 2 + 1]);
-      if (diff2 < d->nt4 && (((std::abs(omskp[x + u / 2] - omskn[x - u / 2]) <= lim ||
-                               std::abs(omskp[x + u / 2] - omskn[x - ((u + 1) / 2)]) <= lim) &&
-                              omskp[x + u / 2] != peak) ||
-                             ((std::abs(omskp[x + ((u + 1) / 2)] - omskn[x - u / 2]) <= lim ||
-                               std::abs(omskp[x + ((u + 1) / 2)] - omskn[x - ((u + 1) / 2)]) <= lim) &&
-                              omskp[x + ((u + 1) / 2)] != peak))) {
+      if (diff2 < d.nt4 && (((std::abs(omskp[x + u / 2] - omskn[x - u / 2]) <= lim ||
+                              std::abs(omskp[x + u / 2] - omskn[x - ((u + 1) / 2)]) <= lim) &&
+                             omskp[x + u / 2] != peak) ||
+                            ((std::abs(omskp[x + ((u + 1) / 2)] - omskn[x - u / 2]) <= lim ||
+                              std::abs(omskp[x + ((u + 1) / 2)] - omskn[x - ((u + 1) / 2)]) <= lim) &&
+                             omskp[x + ((u + 1) / 2)] != peak))) {
         if ((std::abs(dmskp[x] - omskp[x + u / 2]) <= lim || std::abs(dmskp[x] - omskp[x + ((u + 1) / 2)]) <= lim) &&
             (std::abs(dmskp[x] - omskn[x - u / 2]) <= lim || std::abs(dmskp[x] - omskn[x - ((u + 1) / 2)]) <= lim)) {
           val = (dstp[x + u / 2] + dstp[x + ((u + 1) / 2)] + dstpnn[x - u / 2] + dstpnn[x - ((u + 1) / 2)] + 2) / 4;
@@ -1462,16 +1437,16 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param *d, co
     }
   }
 
-  if (min != d->nt8) {
+  if (min != d.nt8) {
     dstpn[x] = val;
     dmskp[x] = neutral + (dir << shift2);
   } else {
-    const int dt = 4 >> d->subSampling;
+    const int dt = 4 >> d.subSampling;
     const int uStart2 = std::max(-x + 1, -dt);
     const int uStop2 = std::min(width - 2 - x, dt);
     const unsigned minm = std::min(dstp[x], dstpnn[x]);
     const unsigned maxm = std::max(dstp[x], dstpnn[x]);
-    min = d->nt7;
+    min = d.nt7;
 
     for (int u = uStart2; u <= uStop2; u++) {
       const int p1 = dstp[x + u / 2] + dstp[x + ((u + 1) / 2)];
@@ -1491,11 +1466,11 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param *d, co
     }
 
     dstpn[x] = val;
-    dmskp[x] = (min == d->nt7) ? neutral : neutral + (dir << shift2);
+    dmskp[x] = (min == d.nt7) ? neutral : neutral + (dir << shift2);
   }
 }
 
-template <typename T> __global__ void postProcess(const EEDI2Param *d, const T *nmsk, const T *omsk, T *dst) {
+template <typename T> __global__ void postProcess(const EEDI2Param d, const T *nmsk, const T *omsk, T *dst) {
   setup_kernel2x;
 
   auto nmskp = line(nmsk);
@@ -1547,9 +1522,9 @@ template <typename T> void VS_CC eedi2Free(void *instanceData, VSCore *_core, co
 
 template <typename T> void eedi2CreateInner(const VSMap *in, VSMap *out, const VSAPI *vsapi, VSCore *core) {
   try {
-    auto d = new (in, vsapi) EEDI2Data<T>;
+    auto data = new (in, vsapi) EEDI2Data<T>;
     vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>, eedi2Free<T>,
-                        d->num_streams > 1 ? fmParallel : fmParallelRequests, 0, d, core);
+                        data->num_streams > 1 ? fmParallel : fmParallelRequests, 0, data, core);
   } catch (const std::exception &exc) {
     vsapi->setError(out, ("EEDI2CUDA: "s + exc.what()).c_str());
     return;
