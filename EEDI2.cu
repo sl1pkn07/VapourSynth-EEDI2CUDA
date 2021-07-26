@@ -366,8 +366,7 @@ public:
   uint16_t width = d.width, height = d.height, x = threadIdx.x + blockIdx.x * blockDim.x,                              \
            y = threadIdx.y + blockIdx.y * blockDim.y;                                                                  \
   constexpr T shift = sizeof(T) * 8 - 8, peak = std::numeric_limits<T>::max(), ten = 10 << shift,                      \
-              twleve = 12 << shift, eight = 8 << shift, twenty = 20 << shift, fiveHundred = 500 << shift,              \
-              three = 3 << shift, nine = 9 << shift;                                                                   \
+              twleve = 12 << shift, eight = 8 << shift, twenty = 20 << shift, three = 3 << shift, nine = 9 << shift;   \
   constexpr T shift2 = shift + 2, neutral = peak / 2
 
 __constant__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12, 12, 12, 12,
@@ -1120,6 +1119,7 @@ template <typename T> __global__ void expandDirMap2X(const EEDI2Param d, const T
 
 template <typename T> __global__ void fillGaps2X(const EEDI2Param d, const T *msk, const T *dmsk, T *tmp) {
   setup_kernel2x;
+  constexpr int fiveHundred = 500 << shift;
 
   auto mskp = lineOff(msk, -1);
   auto dmskp = line(dmsk);
