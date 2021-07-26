@@ -369,10 +369,11 @@ public:
               twleve = 12 << shift, eight = 8 << shift, twenty = 20 << shift, fiveHundred = 500 << shift,              \
               three = 3 << shift, nine = 9 << shift;                                                                   \
   constexpr T shift2 = shift + 2, neutral = peak / 2;                                                                  \
-  constexpr int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12, 12, 12, 12,                      \
-                              12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};                         \
   if (x >= width || y >= height)                                                                                       \
   return
+
+__constant__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12, 12, 12, 12,
+                               12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};
 
 #define setup_kernel2x                                                                                                 \
   setup_kernel;                                                                                                        \
