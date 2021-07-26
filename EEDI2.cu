@@ -38,8 +38,6 @@ struct EEDI2Param {
   uint8_t subSampling;
 };
 
-std::atomic_uint num_instances(0);
-
 template <typename T> class EEDI2Instance {
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
   const VSVideoInfo *vi;
@@ -55,19 +53,17 @@ template <typename T> class EEDI2Instance {
   uint8_t map, pp, field, fieldS;
   uint32_t d_pitch;
 
-  unsigned instanceId;
-
 public:
-  EEDI2Instance(const unsigned instanceId, const VSMap *in, const VSAPI *vsapi)
-      : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode), instanceId(instanceId) {
+  EEDI2Instance(const VSMap *in, const VSAPI *vsapi)
+      : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
     initParams(in, vsapi);
     initCuda();
   }
 
-  EEDI2Instance(const unsigned instanceId, const EEDI2Instance &other, const VSAPI *vsapi)
+  EEDI2Instance(const EEDI2Instance &other, const VSAPI *vsapi)
       : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi),
         vi2(std::make_unique<VSVideoInfo>(*other.vi2)), d(other.d), map(other.map), pp(other.pp), field(other.field),
-        fieldS(other.fieldS), d_pitch(other.d_pitch), instanceId(instanceId) {
+        fieldS(other.fieldS), d_pitch(other.d_pitch) {
     initCuda();
   }
 
@@ -344,17 +340,14 @@ public:
     data->num_streams = static_cast<unsigned>(num_streams);
     auto items = data->items();
     new (items)
-        EEDI2Item(std::piecewise_construct, std::forward_as_tuple(num_instances++, in, vsapi), std::forward_as_tuple());
+        EEDI2Item(std::piecewise_construct, std::forward_as_tuple(in, vsapi), std::forward_as_tuple());
     items[0].second.clear();
     for (unsigned i = 1; i < num_streams; ++i) {
       new (items + i)
-          EEDI2Item(std::piecewise_construct, std::forward_as_tuple(num_instances++, data->firstInstance(), vsapi),
+          EEDI2Item(std::piecewise_construct, std::forward_as_tuple(data->firstInstance(), vsapi),
                     std::forward_as_tuple());
       items[i].second.clear();
     }
-
-    if (num_instances > 32)
-      throw std::runtime_error("too many streams");
     return data;
   }
 
