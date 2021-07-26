@@ -393,12 +393,46 @@ public:
 #define lineOff(p, off) ((p) + stride * (y + (off)))
 #define point(p) ((p)[stride * y + x])
 
-#define CMPSWAP(arr, i, j)                                                                                             \
-  if (arr[i] > arr[j]) {                                                                                               \
-    auto t = arr[i];                                                                                                   \
-    arr[i] = arr[j];                                                                                                   \
-    arr[j] = t;                                                                                                        \
+namespace bose {
+template <typename T, size_t I, size_t J> __device__ __forceinline__ void P(T *arr) {
+  T &a = arr[I - 1], &b = arr[J - 1];
+  const T c = a;
+  a = a < b ? a : b;
+  b = c < b ? b : c;
+}
+
+template <typename T, size_t I, size_t X, size_t J, size_t Y> __device__ __forceinline__ void Pbracket(T *arr) {
+  constexpr size_t A = X / 2, B = (X & 1) ? (Y / 2) : ((Y + 1) / 2);
+
+  if constexpr (X == 1 && Y == 1)
+    P<T, I, J>(arr);
+  else if constexpr (X == 1 && Y == 2) {
+    P<T, I, J + 1>(arr);
+    P<T, I, J>(arr);
+  } else if constexpr (X == 2 && Y == 1) {
+    P<T, I, J>(arr);
+    P<T, I + 1, J>(arr);
+  } else {
+    Pbracket<T, I, A, J, B>(arr);
+    Pbracket<T, I + A, X - A, J + B, Y - B>(arr);
+    Pbracket<T, I + A, X - A, J, B>(arr);
   }
+}
+
+template <typename T, size_t I, size_t M> __device__ __forceinline__ void Pstar(T *arr) {
+  constexpr size_t A = M / 2;
+
+  if constexpr (M > 1) {
+    Pstar<T, I, A>(arr);
+    Pstar<T, I + A, M - A>(arr);
+    Pbracket<T, I, A, I + A, M - A>(arr);
+  }
+}
+} // namespace bose
+
+template <size_t N, typename T> __device__ __forceinline__ void BoseSort(T *arr) { bose::Pstar<T, 1, N>(arr); }
+
+#define bose_sort_array(arr) BoseSort<sizeof(arr) / sizeof((arr)[0])>(arr)
 
 template <typename T> __global__ void buildEdgeMask(const EEDI2Param d, const T *src, T *dst) {
   setup_kernel;
@@ -659,15 +693,7 @@ template <typename T> __global__ void calcDirections(const EEDI2Param d, const T
     order[t] = std::numeric_limits<int>::max();
 
   if (k > 1) {
-    CMPSWAP(order, 0, 1);
-    CMPSWAP(order, 3, 4);
-    CMPSWAP(order, 2, 4);
-    CMPSWAP(order, 2, 3);
-    CMPSWAP(order, 0, 3);
-    CMPSWAP(order, 0, 2);
-    CMPSWAP(order, 1, 4);
-    CMPSWAP(order, 1, 3);
-    CMPSWAP(order, 1, 2);
+    bose_sort_array(order);
 
     const int mid = (k & 1) ? order[k / 2] : (order[(k - 1) / 2] + order[k / 2] + 1) / 2;
     const int lim = std::max(limlut[std::abs(mid)] / 4, 2);
@@ -734,33 +760,7 @@ template <typename T> __global__ void filterDirMap(const EEDI2Param d, const T *
   for (auto t = u; t < 9; ++t)
     order[t] = std::numeric_limits<int>::max();
 
-  CMPSWAP(order, 0, 1);
-  CMPSWAP(order, 2, 3);
-  CMPSWAP(order, 0, 2);
-  CMPSWAP(order, 1, 3);
-  CMPSWAP(order, 1, 2);
-  CMPSWAP(order, 4, 5);
-  CMPSWAP(order, 7, 8);
-  CMPSWAP(order, 6, 8);
-  CMPSWAP(order, 6, 7);
-  CMPSWAP(order, 4, 7);
-  CMPSWAP(order, 4, 6);
-  CMPSWAP(order, 5, 8);
-  CMPSWAP(order, 5, 7);
-  CMPSWAP(order, 5, 6);
-  CMPSWAP(order, 0, 5);
-  CMPSWAP(order, 0, 4);
-  CMPSWAP(order, 1, 6);
-  CMPSWAP(order, 1, 5);
-  CMPSWAP(order, 1, 4);
-  CMPSWAP(order, 2, 7);
-  CMPSWAP(order, 3, 8);
-  CMPSWAP(order, 3, 7);
-  CMPSWAP(order, 2, 5);
-  CMPSWAP(order, 2, 4);
-  CMPSWAP(order, 3, 6);
-  CMPSWAP(order, 3, 5);
-  CMPSWAP(order, 3, 4);
+  bose_sort_array(order);
 
   const int mid = (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
   const int lim = limlut[std::abs(mid - neutral) >> shift2] << shift;
@@ -825,25 +825,7 @@ template <typename T> __global__ void expandDirMap(const EEDI2Param d, const T *
   for (auto t = u; t < 8; ++t)
     order[t] = std::numeric_limits<int>::max();
 
-  CMPSWAP(order, 0, 1);
-  CMPSWAP(order, 2, 3);
-  CMPSWAP(order, 0, 2);
-  CMPSWAP(order, 1, 3);
-  CMPSWAP(order, 1, 2);
-  CMPSWAP(order, 4, 5);
-  CMPSWAP(order, 6, 7);
-  CMPSWAP(order, 4, 6);
-  CMPSWAP(order, 5, 7);
-  CMPSWAP(order, 5, 6);
-  CMPSWAP(order, 0, 4);
-  CMPSWAP(order, 1, 5);
-  CMPSWAP(order, 1, 4);
-  CMPSWAP(order, 2, 6);
-  CMPSWAP(order, 3, 7);
-  CMPSWAP(order, 3, 6);
-  CMPSWAP(order, 2, 4);
-  CMPSWAP(order, 3, 5);
-  CMPSWAP(order, 3, 4);
+  bose_sort_array(order);
 
   const int mid = (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
   const int lim = limlut[std::abs(mid - neutral) >> shift2] << shift;
@@ -967,18 +949,7 @@ template <typename T> __global__ void markDirections2X(const EEDI2Param d, const
   } else {
     for (auto t = v; t < 6; ++t)
       order[t] = std::numeric_limits<int>::max();
-    CMPSWAP(order, 1, 2);
-    CMPSWAP(order, 0, 2);
-    CMPSWAP(order, 0, 1);
-    CMPSWAP(order, 4, 5);
-    CMPSWAP(order, 3, 5);
-    CMPSWAP(order, 3, 4);
-    CMPSWAP(order, 0, 3);
-    CMPSWAP(order, 1, 4);
-    CMPSWAP(order, 2, 5);
-    CMPSWAP(order, 2, 4);
-    CMPSWAP(order, 1, 3);
-    CMPSWAP(order, 2, 3);
+    bose_sort_array(order);
 
     const int mid = (v & 1) ? order[v / 2] : (order[(v - 1) / 2] + order[v / 2] + 1) / 2;
     const int lim = limlut[std::abs(mid - neutral) >> shift2] << shift;
@@ -1062,33 +1033,7 @@ template <typename T> __global__ void filterDirMap2X(const EEDI2Param d, const T
 
   for (auto t = u; t < 9; ++t)
     order[t] = std::numeric_limits<int>::max();
-  CMPSWAP(order, 0, 1);
-  CMPSWAP(order, 2, 3);
-  CMPSWAP(order, 0, 2);
-  CMPSWAP(order, 1, 3);
-  CMPSWAP(order, 1, 2);
-  CMPSWAP(order, 4, 5);
-  CMPSWAP(order, 7, 8);
-  CMPSWAP(order, 6, 8);
-  CMPSWAP(order, 6, 7);
-  CMPSWAP(order, 4, 7);
-  CMPSWAP(order, 4, 6);
-  CMPSWAP(order, 5, 8);
-  CMPSWAP(order, 5, 7);
-  CMPSWAP(order, 5, 6);
-  CMPSWAP(order, 0, 5);
-  CMPSWAP(order, 0, 4);
-  CMPSWAP(order, 1, 6);
-  CMPSWAP(order, 1, 5);
-  CMPSWAP(order, 1, 4);
-  CMPSWAP(order, 2, 7);
-  CMPSWAP(order, 3, 8);
-  CMPSWAP(order, 3, 7);
-  CMPSWAP(order, 2, 5);
-  CMPSWAP(order, 2, 4);
-  CMPSWAP(order, 3, 6);
-  CMPSWAP(order, 3, 5);
-  CMPSWAP(order, 3, 4);
+  bose_sort_array(order);
 
   const int mid = (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
   const int lim = limlut[std::abs(mid - neutral) >> shift2] << shift;
@@ -1159,33 +1104,7 @@ template <typename T> __global__ void expandDirMap2X(const EEDI2Param d, const T
 
   for (auto t = u; t < 9; ++t)
     order[t] = std::numeric_limits<int>::max();
-  CMPSWAP(order, 0, 1);
-  CMPSWAP(order, 2, 3);
-  CMPSWAP(order, 0, 2);
-  CMPSWAP(order, 1, 3);
-  CMPSWAP(order, 1, 2);
-  CMPSWAP(order, 4, 5);
-  CMPSWAP(order, 7, 8);
-  CMPSWAP(order, 6, 8);
-  CMPSWAP(order, 6, 7);
-  CMPSWAP(order, 4, 7);
-  CMPSWAP(order, 4, 6);
-  CMPSWAP(order, 5, 8);
-  CMPSWAP(order, 5, 7);
-  CMPSWAP(order, 5, 6);
-  CMPSWAP(order, 0, 5);
-  CMPSWAP(order, 0, 4);
-  CMPSWAP(order, 1, 6);
-  CMPSWAP(order, 1, 5);
-  CMPSWAP(order, 1, 4);
-  CMPSWAP(order, 2, 7);
-  CMPSWAP(order, 3, 8);
-  CMPSWAP(order, 3, 7);
-  CMPSWAP(order, 2, 5);
-  CMPSWAP(order, 2, 4);
-  CMPSWAP(order, 3, 6);
-  CMPSWAP(order, 3, 5);
-  CMPSWAP(order, 3, 4);
+  bose_sort_array(order);
 
   const int mid = (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
   const int lim = limlut[std::abs(mid - neutral) >> shift2] << shift;

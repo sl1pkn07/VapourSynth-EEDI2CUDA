@@ -7,7 +7,7 @@ FetchContent_Declare(VapourSynth
     URL_HASH    MD5=B869FFB96D423B086C0E19E2210229DF)
 FetchContent_MakeAvailable(VapourSynth)
 
-set(CMAKE_CUDA_STANDARD 14 REQUIRED)
+set(CMAKE_CUDA_STANDARD 17 REQUIRED)
 set(CMAKE_CUDA_VISIBILITY_PRESET hidden)
 add_library(EEDI2CUDA SHARED
     "EEDI2.cu")
