@@ -1240,12 +1240,12 @@ __global__ void fillGaps2XStep2(const EEDI2Param d, const T *msk, const T *dmsk,
   if (!uv)
     return;
 
-  auto u = pos - (uv & 255);
-  auto v = pos + (uv >> 8);
-  auto back = dmskp[u];
-  auto forward = dmskp[v];
+  int u = pos - (uv & 255);
+  int v = pos + (uv >> 8);
+  int back = dmskp[u];
+  int forward = dmskp[v];
 
-  out = back + __float2uint_ru((forward - back) * (x - 1 - u) * 1.f / (v - u));
+  out = back + __float2int_ru((forward - back) * (x - 1 - u) * 1.f / (v - u));
 }
 
 template <typename T> __global__ void interpolateLattice(const EEDI2Param d, const T *omsk, T *dmsk, T *dst) {
