@@ -208,7 +208,7 @@ public:
       try_cuda(cudaMemcpy2DAsync(h_src, d_pitch, s_src, s_pitch, width_bytes, height, cudaMemcpyHostToHost, stream));
       try_cuda(cudaMemcpy2DAsync(d_src, d_pitch, h_src, d_pitch, width_bytes, height, cudaMemcpyHostToDevice, stream));
 
-      dim3 blocks = dim3(16, 8);
+      dim3 blocks = dim3(64, 1);
       dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
 
       buildEdgeMask<<<grids, blocks, 0, stream>>>(d, src, msk);
