@@ -1224,33 +1224,18 @@ __global__ void fillGaps2XStep2(const EEDI2Param d, const T *msk, const T *dmsk,
 
   unsigned uv = 0, pos;
 
-  for (unsigned i = x + 1; i - x < 255 && i < width; ++i) {
-    if (i - (tmpp[i] & 255u) < x) {
-      uv = tmpp[i];
-      pos = i;
-      break;
-    }
-    if (dmskp[i] != peak || mskp[i] != peak && mskpn[i] != peak) {
-      break;
-    }
+  for (unsigned i = max(x - 255, 1); i < x; ++i) {
+    bool cond = i + (tmpp[i] >> 8) > x;
+    uv = cond ? tmpp[i] : uv;
+    pos = cond ? i : pos;
   }
-
-  if (!uv) {
-    uv = tmpp[x];
-    pos = x;
+  uv = tmpp[x] ? tmpp[x] : uv;
+  pos = tmpp[x] ? x : pos;
+  for (unsigned i = x + 1; i - x < 255 && i < width - 1; ++i) {
+    bool cond = i - (tmpp[i] & 255u) < x;
+    uv = cond ? tmpp[i] : uv;
+    pos = cond ? i : pos;
   }
-
-  if (!uv)
-    for (unsigned i = x - 1; x - i < 255 && i; --i) {
-      if (i + (tmpp[i] >> 8) > x) {
-        uv = tmpp[i];
-        pos = i;
-        break;
-      }
-      if (dmskp[i] != peak || mskp[i] != peak && mskpn[i] != peak) {
-        break;
-      }
-    }
 
   if (!uv)
     return;
@@ -1260,8 +1245,7 @@ __global__ void fillGaps2XStep2(const EEDI2Param d, const T *msk, const T *dmsk,
   auto back = dmskp[u];
   auto forward = dmskp[v];
 
-  auto step = static_cast<float>(forward - back) / (v - u);
-  out = back + static_cast<unsigned>((x - 1 - u) * step + 0.5);
+  out = back + __float2uint_ru((forward - back) * (x - 1 - u) * 1.f / (v - u));
 }
 
 template <typename T> __global__ void interpolateLattice(const EEDI2Param d, const T *omsk, T *dmsk, T *dst) {
