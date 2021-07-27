@@ -650,22 +650,12 @@ template <typename T> __global__ void calcDirections(const EEDI2Param d, const T
     }
   }
 
-  int order[5];
-  unsigned k = 0;
-
-  if (dirA != -5000)
-    order[k++] = dirA;
-  if (dirB != -5000)
-    order[k++] = dirB;
-  if (dirC != -5000)
-    order[k++] = dirC;
-  if (dirD != -5000)
-    order[k++] = dirD;
-  if (dirE != -5000)
-    order[k++] = dirE;
-
-  for (auto t = k; t < 5; ++t)
-    order[t] = std::numeric_limits<int>::max();
+  auto okA = dirA != -5000, okB = dirB != -5000, okC = dirC != -5000, okD = dirD != -5000, okE = dirE != -5000;
+  unsigned k = okA + okB + okC + okD + okE;
+  constexpr int intmax = std::numeric_limits<int>::max();
+  int order[] = {
+      okA ? dirA : intmax, okB ? dirB : intmax, okC ? dirC : intmax, okD ? dirD : intmax, okE ? dirE : intmax,
+  };
 
   if (k > 1) {
     bose_sort_array(order);
@@ -673,16 +663,15 @@ template <typename T> __global__ void calcDirections(const EEDI2Param d, const T
     const int mid = (k & 1) ? order[k / 2] : (order[(k - 1) / 2] + order[k / 2] + 1) / 2;
     const int lim = mmax(limlut[abs(mid)] / 4, 2);
     int sum = 0;
-    unsigned count = 0;
+    int count = 0;
 
-    for (unsigned i = 0; i < k; i++) {
-      if (abs(order[i] - mid) <= lim) {
-        sum += order[i];
-        count++;
-      }
+    for (unsigned i = 0; i < 5; i++) {
+      auto cond = abs(order[i] - mid) <= lim;
+      sum += cond ? order[i] : 0;
+      count += cond;
     }
 
-    out = (count > 1) ? neutral + (static_cast<int>(static_cast<float>(sum) / count) << shift2) : neutral;
+    out = (count > 1) ? neutral + ((sum / count) << shift2) : neutral;
   } else {
     out = neutral;
   }
