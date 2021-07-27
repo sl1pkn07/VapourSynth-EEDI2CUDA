@@ -255,14 +255,15 @@ public:
             else
               try_cuda(
                   cudaMemcpyAsync(dst2, dst2 + d_pitch / sizeof(T), width_bytes, cudaMemcpyDeviceToDevice, stream));
-            interpolateLattice<<<grids, blocks, 0, stream>>>(d, tmp2_2, tmp2, dst2);
+            try_cuda(cudaMemcpy2DAsync(tmp2_3, d_pitch, tmp2, d_pitch, width_bytes, height2x, cudaMemcpyDeviceToDevice,
+                                       stream));
+
+            interpolateLattice<<<grids, blocks, 0, stream>>>(d, tmp2_2, tmp2, dst2, tmp2_3);
 
             if (pp == 1) {
-              try_cuda(cudaMemcpy2DAsync(tmp2_2, d_pitch, tmp2, d_pitch, width_bytes, height2x,
-                                         cudaMemcpyDeviceToDevice, stream));
-              filterDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2, dst2M);
+              filterDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2_3, dst2M);
               expandDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, dst2M, tmp2);
-              postProcess<<<grids, blocks, 0, stream>>>(d, tmp2, tmp2_2, dst2);
+              postProcess<<<grids, blocks, 0, stream>>>(d, tmp2, tmp2_3, dst2);
             } else if (pp != 0) {
               throw std::runtime_error("currently only pp == 1 is supported");
             }
@@ -1114,7 +1115,8 @@ __global__ void fillGaps2XStep2(const EEDI2Param d, const T *msk, const T *dmsk,
   out = back + round_div((forward - back) * (x - 1 - u), (v - u));
 }
 
-template <typename T> __global__ void interpolateLattice(const EEDI2Param d, const T *omsk, T *dmsk, T *dst) {
+template <typename T>
+__global__ void interpolateLattice(const EEDI2Param d, const T *omsk, const T *dmsk, T *dst, T *dmsk_2) {
   setup_kernel2x;
 
   auto omskp = lineOff(omsk, -1);
@@ -1123,6 +1125,8 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param d, con
   auto dstp = lineOff(dst, -1);
   auto dstpn = line(dst);
   auto dstpnn = lineOff(dst, 1);
+  auto &out = point(dst);
+  auto &mout = point(dmsk_2);
 
   bounds_check3(x, 0, width);
   bounds_check3(y, 1, height - 1);
@@ -1131,9 +1135,9 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param d, con
   const int lim = limlut[abs(dir - neutral) >> shift2] << shift;
 
   if (dir == peak || (abs(dmskp[x] - dmskp[x - 1]) > lim && abs(dmskp[x] - dmskp[x + 1]) > lim)) {
-    dstpn[x] = (dstp[x] + dstpnn[x] + 1) / 2;
+    out = (dstp[x] + dstpnn[x] + 1) / 2;
     if (dir != peak)
-      dmskp[x] = neutral;
+      mout = neutral;
     return;
   }
 
@@ -1144,8 +1148,8 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param d, con
         (dstp[x + 1] >> shift) * (dstp[x + 1] >> shift) + (dstpnn[x - 1] >> shift) * (dstpnn[x - 1] >> shift) +
         (dstpnn[x] >> shift) * (dstpnn[x] >> shift) + (dstpnn[x + 1] >> shift) * (dstpnn[x + 1] >> shift);
     if (6 * sumsq - sum * sum < 576) {
-      dstpn[x] = (dstp[x] + dstpnn[x] + 1) / 2;
-      dmskp[x] = peak;
+      out = (dstp[x] + dstpnn[x] + 1) / 2;
+      mout = peak;
       return;
     }
   }
@@ -1157,8 +1161,8 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param d, con
        (dstp[x] > mmin(dstp[x - 2], dstp[x - 1]) + three && dstp[x] > mmin(dstp[x + 2], dstp[x + 1]) + three &&
         dstpnn[x] > mmin(dstpnn[x - 2], dstpnn[x - 1]) + three &&
         dstpnn[x] > mmin(dstpnn[x + 2], dstpnn[x + 1]) + three))) {
-    dstpn[x] = (dstp[x] + dstpnn[x] + 1) / 2;
-    dmskp[x] = neutral;
+    out = (dstp[x] + dstpnn[x] + 1) / 2;
+    mout = neutral;
     return;
   }
 
@@ -1199,8 +1203,8 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param d, con
   }
 
   if (min != d.nt8) {
-    dstpn[x] = val;
-    dmskp[x] = neutral + (dir << shift2);
+    out = val;
+    mout = neutral + (dir << shift2);
   } else {
     const int dt = 4 >> d.subSampling;
     const int uStart2 = mmax(-x + 1, -dt);
@@ -1225,8 +1229,8 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param d, con
       }
     }
 
-    dstpn[x] = val;
-    dmskp[x] = (min == d.nt7) ? neutral : neutral + (dir << shift2);
+    out = val;
+    mout = (min == d.nt7) ? neutral : neutral + (dir << shift2);
   }
 }
 
