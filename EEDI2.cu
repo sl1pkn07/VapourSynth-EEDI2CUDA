@@ -30,6 +30,11 @@ class CUDAError : public std::runtime_error {
 
 [[noreturn]] void unreachable() { assert(false); }
 
+template<typename Td, typename Ts>
+void numeric_cast_to(Td& dst, Ts src) {
+  dst = boost::numeric_cast<Td>(src);
+}
+
 struct EEDI2Param {
   uint32_t d_pitch;
   uint32_t nt4, nt7, nt8, nt13, nt19;
@@ -80,7 +85,6 @@ public:
 private:
   void initParams(const VSMap *in, const VSAPI *vsapi) {
     using invalid_arg = std::invalid_argument;
-    using boost::numeric_cast;
 
     vi = vsapi->getVideoInfo(node.get());
     vi2 = std::make_unique<VSVideoInfo>(*vi);
@@ -97,20 +101,20 @@ private:
       return err ? def : ret;
     };
 
-    field = numeric_cast<uint8_t>(vsapi->propGetInt(in, "field", 0, nullptr));
+    numeric_cast_to(field, vsapi->propGetInt(in, "field", 0, nullptr));
 
-    d.mthresh = numeric_cast<uint8_t>(propGetIntDefault("mthresh", 10));
-    d.lthresh = numeric_cast<uint8_t>(propGetIntDefault("lthresh", 20));
-    d.vthresh = numeric_cast<uint8_t>(propGetIntDefault("vthresh", 20));
+    numeric_cast_to(d.mthresh, propGetIntDefault("mthresh", 10));
+    numeric_cast_to(d.lthresh, propGetIntDefault("lthresh", 20));
+    numeric_cast_to(d.vthresh, propGetIntDefault("vthresh", 20));
 
-    d.estr = numeric_cast<uint8_t>(propGetIntDefault("estr", 2));
-    d.dstr = numeric_cast<uint8_t>(propGetIntDefault("dstr", 4));
-    d.maxd = numeric_cast<uint8_t>(propGetIntDefault("maxd", 24));
+    numeric_cast_to(d.estr, propGetIntDefault("estr", 2));
+    numeric_cast_to(d.dstr, propGetIntDefault("dstr", 4));
+    numeric_cast_to(d.maxd, propGetIntDefault("maxd", 24));
 
-    map = numeric_cast<uint8_t>(propGetIntDefault("map", 0));
-    pp = numeric_cast<uint8_t>(propGetIntDefault("pp", 1));
+    numeric_cast_to(map, propGetIntDefault("map", 0));
+    numeric_cast_to(pp, propGetIntDefault("pp", 1));
 
-    uint16_t nt = numeric_cast<uint8_t>(propGetIntDefault("nt", 50));
+    auto nt = static_cast<uint32_t>(boost::numeric_cast<uint8_t>(propGetIntDefault("nt", 50)));
 
     if (field > 3)
       throw invalid_arg("field must be 0, 1, 2 or 3");
