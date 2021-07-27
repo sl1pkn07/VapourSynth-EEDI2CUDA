@@ -806,44 +806,27 @@ template <typename T> __global__ void filterMap(const EEDI2Param d, const T *msk
   dir >>= shift;
   bool ict = false, icb = false;
 
-  if (dir < 0) {
-    for (int j = mmax(-(int)x, dir); j <= 0; j++) {
-      if ((abs(dmskpp[x + j] - dmskp[x]) > lim && dmskpp[x + j] != peak) ||
-          (dmskp[x + j] == peak && dmskpp[x + j] == peak) ||
-          (abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
-        ict = true;
-        break;
-      }
-    }
-  } else {
-    for (int j = 0; j <= mmin((int)width - (int)x - 1, dir); j++) {
-      if ((abs(dmskpp[x + j] - dmskp[x]) > lim && dmskpp[x + j] != peak) ||
-          (dmskp[x + j] == peak && dmskpp[x + j] == peak) ||
-          (abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
-        ict = true;
-        break;
-      }
+  auto cond = dir < 0;
+  auto l = cond ? mmax(-x, dir) : 0;
+  auto r = cond ? 0 : mmin(width - x - 1, dir);
+  for (int j = l; j <= r; j++) {
+    if ((abs(dmskpp[x + j] - dmskp[x]) > lim && dmskpp[x + j] != peak) ||
+        (dmskp[x + j] == peak && dmskpp[x + j] == peak) ||
+        (abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
+      ict = true;
+      break;
     }
   }
 
   if (ict) {
-    if (dir < 0) {
-      for (int j = 0; j <= mmin((int)width - (int)x - 1, abs(dir)); j++) {
-        if ((abs(dmskpn[x + j] - dmskp[x]) > lim && dmskpn[x + j] != peak) ||
-            (dmskpn[x + j] == peak && dmskp[x + j] == peak) ||
-            (abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
-          icb = true;
-          break;
-        }
-      }
-    } else {
-      for (int j = mmax(-(int)x, -dir); j <= 0; j++) {
-        if ((abs(dmskpn[x + j] - dmskp[x]) > lim && dmskpn[x + j] != peak) ||
-            (dmskpn[x + j] == peak && dmskp[x + j] == peak) ||
-            (abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
-          icb = true;
-          break;
-        }
+    auto l = cond ? 0 : mmax(-x, -dir);
+    auto r = cond ? mmin(width - x - 1, -dir) : 0;
+    for (int j = l; j <= r; j++) {
+      if ((abs(dmskpn[x + j] - dmskp[x]) > lim && dmskpn[x + j] != peak) ||
+          (dmskpn[x + j] == peak && dmskp[x + j] == peak) ||
+          (abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
+        icb = true;
+        break;
       }
     }
 
