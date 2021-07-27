@@ -1233,14 +1233,14 @@ __global__ void fillGaps2XStep2(const EEDI2Param d, const T *msk, const T *dmsk,
 
   unsigned uv = 0, pos;
 
-  for (unsigned i = max(x - 255, 1); i < x; ++i) {
+  for (unsigned i = max(x - 16, 1); i < x; ++i) {
     bool cond = i + (tmpp[i] >> 8) > x;
     uv = cond ? tmpp[i] : uv;
     pos = cond ? i : pos;
   }
   uv = tmpp[x] ? tmpp[x] : uv;
   pos = tmpp[x] ? x : pos;
-  for (unsigned i = x + 1; i - x < 255 && i < width - 1; ++i) {
+  for (unsigned i = x + 1; i - x < 16 && i < width - 1; ++i) {
     bool cond = i - (tmpp[i] & 255u) < x;
     uv = cond ? tmpp[i] : uv;
     pos = cond ? i : pos;
