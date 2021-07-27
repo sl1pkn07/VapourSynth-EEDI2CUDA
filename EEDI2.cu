@@ -20,12 +20,12 @@ using namespace std::literals::string_literals;
 class CUDAError : public std::runtime_error {
   using std::runtime_error::runtime_error;
 };
-#define try_cuda(expr)                                                                                                 \
-  do {                                                                                                                 \
-    cudaError_t __err = expr;                                                                                          \
-    if (__err != cudaSuccess) {                                                                                        \
-      throw CUDAError("'"s + #expr + " failed: " + cudaGetErrorString(__err));                                         \
-    }                                                                                                                  \
+#define try_cuda(expr)                                                                                                                     \
+  do {                                                                                                                                     \
+    cudaError_t __err = expr;                                                                                                              \
+    if (__err != cudaSuccess) {                                                                                                            \
+      throw CUDAError("'"s + #expr + " failed: " + cudaGetErrorString(__err));                                                             \
+    }                                                                                                                                      \
   } while (0)
 
 [[noreturn]] void unreachable() { assert(false); }
@@ -58,16 +58,14 @@ template <typename T> class EEDI2Instance {
   uint32_t d_pitch;
 
 public:
-  EEDI2Instance(const VSMap *in, const VSAPI *vsapi)
-      : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
+  EEDI2Instance(const VSMap *in, const VSAPI *vsapi) : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
     initParams(in, vsapi);
     initCuda();
   }
 
   EEDI2Instance(const EEDI2Instance &other, const VSAPI *vsapi)
-      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi),
-        vi2(std::make_unique<VSVideoInfo>(*other.vi2)), d(other.d), map(other.map), pp(other.pp), field(other.field),
-        fieldS(other.fieldS), d_pitch(other.d_pitch) {
+      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi), vi2(std::make_unique<VSVideoInfo>(*other.vi2)),
+        d(other.d), map(other.map), pp(other.pp), field(other.field), fieldS(other.fieldS), d_pitch(other.d_pitch) {
     initCuda();
   }
 
@@ -185,8 +183,8 @@ public:
     if (fieldS > 1)
       field = (n & 1) ? (fieldS == 2 ? 1 : 0) : (fieldS == 2 ? 0 : 1);
 
-    std::unique_ptr<const VSFrameRef, void (*const)(const VSFrameRef *)> src_frame{
-        vsapi->getFrameFilter(n, node.get(), frameCtx), vsapi->freeFrame};
+    std::unique_ptr<const VSFrameRef, void (*const)(const VSFrameRef *)> src_frame{vsapi->getFrameFilter(n, node.get(), frameCtx),
+                                                                                   vsapi->freeFrame};
     std::unique_ptr<VSFrameRef, void (*const)(const VSFrameRef *)> dst_frame{
         vsapi->newVideoFrame(vi2->format, vi2->width, vi2->height, src_frame.get(), core), vsapi->freeFrame};
 
@@ -249,14 +247,11 @@ public:
 
           if (map != 3) {
             if (field)
-              try_cuda(cudaMemcpyAsync(dst2 + d_pitch / sizeof(T) * (height2x - 1),
-                                       dst2 + d_pitch / sizeof(T) * (height2x - 2), width_bytes,
-                                       cudaMemcpyDeviceToDevice, stream));
+              try_cuda(cudaMemcpyAsync(dst2 + d_pitch / sizeof(T) * (height2x - 1), dst2 + d_pitch / sizeof(T) * (height2x - 2),
+                                       width_bytes, cudaMemcpyDeviceToDevice, stream));
             else
-              try_cuda(
-                  cudaMemcpyAsync(dst2, dst2 + d_pitch / sizeof(T), width_bytes, cudaMemcpyDeviceToDevice, stream));
-            try_cuda(cudaMemcpy2DAsync(tmp2_3, d_pitch, tmp2, d_pitch, width_bytes, height2x, cudaMemcpyDeviceToDevice,
-                                       stream));
+              try_cuda(cudaMemcpyAsync(dst2, dst2 + d_pitch / sizeof(T), width_bytes, cudaMemcpyDeviceToDevice, stream));
+            try_cuda(cudaMemcpy2DAsync(tmp2_3, d_pitch, tmp2, d_pitch, width_bytes, height2x, cudaMemcpyDeviceToDevice, stream));
 
             interpolateLattice<<<grids, blocks, 0, stream>>>(d, tmp2_2, tmp2, dst2, tmp2_3);
 
@@ -284,10 +279,8 @@ public:
         d_dst = dst;
         dst_height = height;
       }
-      try_cuda(
-          cudaMemcpy2DAsync(h_dst, d_pitch, d_dst, d_pitch, width_bytes, dst_height, cudaMemcpyDeviceToHost, stream));
-      try_cuda(
-          cudaMemcpy2DAsync(s_dst, s_pitch, h_dst, d_pitch, width_bytes, dst_height, cudaMemcpyHostToHost, stream));
+      try_cuda(cudaMemcpy2DAsync(h_dst, d_pitch, d_dst, d_pitch, width_bytes, dst_height, cudaMemcpyDeviceToHost, stream));
+      try_cuda(cudaMemcpy2DAsync(s_dst, s_pitch, h_dst, d_pitch, width_bytes, dst_height, cudaMemcpyHostToHost, stream));
       try_cuda(cudaStreamSynchronize(stream));
     }
 
@@ -311,8 +304,7 @@ public:
     new (items) EEDI2Item(std::piecewise_construct, std::forward_as_tuple(in, vsapi), std::forward_as_tuple());
     items[0].second.clear();
     for (unsigned i = 1; i < num_streams; ++i) {
-      new (items + i)
-          EEDI2Item(std::piecewise_construct, std::forward_as_tuple(firstInstance(), vsapi), std::forward_as_tuple());
+      new (items + i) EEDI2Item(std::piecewise_construct, std::forward_as_tuple(firstInstance(), vsapi), std::forward_as_tuple());
       items[i].second.clear();
     }
   }
@@ -361,24 +353,23 @@ public:
   static void operator delete(void *p) { ::operator delete(p); }
 };
 
-#define setup_kernel                                                                                                   \
-  uint16_t width = d.width, height = d.height, x = threadIdx.x + blockIdx.x * blockDim.x,                              \
-           y = threadIdx.y + blockIdx.y * blockDim.y;                                                                  \
-  constexpr T shift = sizeof(T) * 8 - 8, peak = std::numeric_limits<T>::max(), ten = 10 << shift,                      \
-              twleve = 12 << shift, eight = 8 << shift, twenty = 20 << shift, three = 3 << shift, nine = 9 << shift;   \
-  constexpr T shift2 = shift + 2, neutral = peak / 2;                                                                  \
+#define setup_kernel                                                                                                                       \
+  uint16_t width = d.width, height = d.height, x = threadIdx.x + blockIdx.x * blockDim.x, y = threadIdx.y + blockIdx.y * blockDim.y;       \
+  constexpr T shift = sizeof(T) * 8 - 8, peak = std::numeric_limits<T>::max(), ten = 10 << shift, twleve = 12 << shift,                    \
+              eight = 8 << shift, twenty = 20 << shift, three = 3 << shift, nine = 9 << shift;                                             \
+  constexpr T shift2 = shift + 2, neutral = peak / 2;                                                                                      \
   constexpr int intmax = std::numeric_limits<int>::max()
 
 __device__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12, 12, 12, 12,
                              12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};
 
-#define setup_kernel2x                                                                                                 \
-  setup_kernel;                                                                                                        \
-  height *= 2;                                                                                                         \
+#define setup_kernel2x                                                                                                                     \
+  setup_kernel;                                                                                                                            \
+  height *= 2;                                                                                                                             \
   y = d.field ? 2 * y + 1 : 2 * y
 
-#define bounds_check3(value, lower, upper)                                                                             \
-  if ((value) < (lower) || (value) >= (upper))                                                                         \
+#define bounds_check3(value, lower, upper)                                                                                                 \
+  if ((value) < (lower) || (value) >= (upper))                                                                                             \
   return
 
 #define stride (d.d_pitch / sizeof(T))
@@ -462,18 +453,15 @@ template <typename T> __global__ void buildEdgeMask(const EEDI2Param d, const T 
   bounds_check3(y, 1, height - 1);
 
   if ((abs(srcpp[x] - srcp[x]) < ten && abs(srcp[x] - srcpn[x]) < ten && abs(srcpp[x] - srcpn[x]) < ten) ||
-      (abs(srcpp[x - 1] - srcp[x - 1]) < ten && abs(srcp[x - 1] - srcpn[x - 1]) < ten &&
-       abs(srcpp[x - 1] - srcpn[x - 1]) < ten && abs(srcpp[x + 1] - srcp[x + 1]) < ten &&
-       abs(srcp[x + 1] - srcpn[x + 1]) < ten && abs(srcpp[x + 1] - srcpn[x + 1]) < ten))
+      (abs(srcpp[x - 1] - srcp[x - 1]) < ten && abs(srcp[x - 1] - srcpn[x - 1]) < ten && abs(srcpp[x - 1] - srcpn[x - 1]) < ten &&
+       abs(srcpp[x + 1] - srcp[x + 1]) < ten && abs(srcp[x + 1] - srcpn[x + 1]) < ten && abs(srcpp[x + 1] - srcpn[x + 1]) < ten))
     return;
 
-  const unsigned sum = (srcpp[x - 1] + srcpp[x] + srcpp[x + 1] + srcp[x - 1] + srcp[x] + srcp[x + 1] + srcpn[x - 1] +
-                        srcpn[x] + srcpn[x + 1]) >>
-                       shift;
+  const unsigned sum =
+      (srcpp[x - 1] + srcpp[x] + srcpp[x + 1] + srcp[x - 1] + srcp[x] + srcp[x + 1] + srcpn[x - 1] + srcpn[x] + srcpn[x + 1]) >> shift;
   const unsigned sumsq = (srcpp[x - 1] >> shift) * (srcpp[x - 1] >> shift) + (srcpp[x] >> shift) * (srcpp[x] >> shift) +
-                         (srcpp[x + 1] >> shift) * (srcpp[x + 1] >> shift) +
-                         (srcp[x - 1] >> shift) * (srcp[x - 1] >> shift) + (srcp[x] >> shift) * (srcp[x] >> shift) +
-                         (srcp[x + 1] >> shift) * (srcp[x + 1] >> shift) +
+                         (srcpp[x + 1] >> shift) * (srcpp[x + 1] >> shift) + (srcp[x - 1] >> shift) * (srcp[x - 1] >> shift) +
+                         (srcp[x] >> shift) * (srcp[x] >> shift) + (srcp[x + 1] >> shift) * (srcp[x + 1] >> shift) +
                          (srcpn[x - 1] >> shift) * (srcpn[x - 1] >> shift) + (srcpn[x] >> shift) * (srcpn[x] >> shift) +
                          (srcpn[x + 1] >> shift) * (srcpn[x + 1] >> shift);
   if (9 * sumsq - sum * sum < d.vthresh)
@@ -557,10 +545,10 @@ template <typename T> __global__ void removeSmallHorzGaps(const EEDI2Param d, co
   bounds_check3(y, 1, height - 1);
 
   auto a = mskp[x - 3] | mskp[x - 2] | mskp[x - 1] | mskp[x + 1] | mskp[x + 2] | mskp[x + 3] ? orig : 0;
-  auto b = (mskp[x + 1] & (mskp[x - 1] | mskp[x - 2] | mskp[x - 3])) | (mskp[x + 2] & (mskp[x - 1] | mskp[x - 2])) |
-                   (mskp[x + 3] & mskp[x - 1])
-               ? peak
-               : orig;
+  auto b =
+      (mskp[x + 1] & (mskp[x - 1] | mskp[x - 2] | mskp[x - 3])) | (mskp[x + 2] & (mskp[x - 1] | mskp[x - 2])) | (mskp[x + 3] & mskp[x - 1])
+          ? peak
+          : orig;
 
   out = mskp[x] ? a : b;
 }
@@ -601,14 +589,10 @@ template <typename T> __global__ void calcDirections(const EEDI2Param d, const T
   for (int u = uStart; u <= uStop; u++) {
     if ((y == 1 || mskpp[x - 1 + u] == peak || mskpp[x + u] == peak || mskpp[x + 1 + u] == peak) &&
         (y == height - 2 || mskpn[x - 1 - u] == peak || mskpn[x - u] == peak || mskpn[x + 1 - u] == peak)) {
-      const unsigned diffsn =
-          abs(srcp[x - 1] - srcpn[x - 1 - u]) + abs(srcp[x] - srcpn[x - u]) + abs(srcp[x + 1] - srcpn[x + 1 - u]);
-      const unsigned diffsp =
-          abs(srcp[x - 1] - srcpp[x - 1 + u]) + abs(srcp[x] - srcpp[x + u]) + abs(srcp[x + 1] - srcpp[x + 1 + u]);
-      const unsigned diffps =
-          abs(srcpp[x - 1] - srcp[x - 1 - u]) + abs(srcpp[x] - srcp[x - u]) + abs(srcpp[x + 1] - srcp[x + 1 - u]);
-      const unsigned diffns =
-          abs(srcpn[x - 1] - srcp[x - 1 + u]) + abs(srcpn[x] - srcp[x + u]) + abs(srcpn[x + 1] - srcp[x + 1 + u]);
+      const unsigned diffsn = abs(srcp[x - 1] - srcpn[x - 1 - u]) + abs(srcp[x] - srcpn[x - u]) + abs(srcp[x + 1] - srcpn[x + 1 - u]);
+      const unsigned diffsp = abs(srcp[x - 1] - srcpp[x - 1 + u]) + abs(srcp[x] - srcpp[x + u]) + abs(srcp[x + 1] - srcpp[x + 1 + u]);
+      const unsigned diffps = abs(srcpp[x - 1] - srcp[x - 1 - u]) + abs(srcpp[x] - srcp[x - u]) + abs(srcpp[x + 1] - srcp[x + 1 - u]);
+      const unsigned diffns = abs(srcpn[x - 1] - srcp[x - 1 + u]) + abs(srcpn[x] - srcp[x + u]) + abs(srcpn[x + 1] - srcp[x + 1 + u]);
       const unsigned diff = diffsn + diffsp + diffps + diffns;
       unsigned diffD = diffsp + diffns;
       unsigned diffE = diffsn + diffps;
@@ -619,10 +603,8 @@ template <typename T> __global__ void calcDirections(const EEDI2Param d, const T
       }
 
       if (y > 1) {
-        const unsigned diff2pp =
-            abs(src2p[x - 1] - srcpp[x - 1 - u]) + abs(src2p[x] - srcpp[x - u]) + abs(src2p[x + 1] - srcpp[x + 1 - u]);
-        const unsigned diffp2p =
-            abs(srcpp[x - 1] - src2p[x - 1 + u]) + abs(srcpp[x] - src2p[x + u]) + abs(srcpp[x + 1] - src2p[x + 1 + u]);
+        const unsigned diff2pp = abs(src2p[x - 1] - srcpp[x - 1 - u]) + abs(src2p[x] - srcpp[x - u]) + abs(src2p[x + 1] - srcpp[x + 1 - u]);
+        const unsigned diffp2p = abs(srcpp[x - 1] - src2p[x - 1 + u]) + abs(srcpp[x] - src2p[x + u]) + abs(srcpp[x + 1] - src2p[x + 1 + u]);
         const unsigned diffA = diff + diff2pp + diffp2p;
         diffD += diffp2p;
         diffE += diff2pp;
@@ -634,10 +616,8 @@ template <typename T> __global__ void calcDirections(const EEDI2Param d, const T
       }
 
       if (y < height - 2) {
-        const unsigned diff2nn =
-            abs(src2n[x - 1] - srcpn[x - 1 + u]) + abs(src2n[x] - srcpn[x + u]) + abs(src2n[x + 1] - srcpn[x + 1 + u]);
-        const unsigned diffn2n =
-            abs(srcpn[x - 1] - src2n[x - 1 - u]) + abs(srcpn[x] - src2n[x - u]) + abs(srcpn[x + 1] - src2n[x + 1 - u]);
+        const unsigned diff2nn = abs(src2n[x - 1] - srcpn[x - 1 + u]) + abs(src2n[x] - srcpn[x + u]) + abs(src2n[x + 1] - srcpn[x + 1 + u]);
+        const unsigned diffn2n = abs(srcpn[x - 1] - src2n[x - 1 - u]) + abs(srcpn[x] - src2n[x - u]) + abs(srcpn[x + 1] - src2n[x + 1 - u]);
         const unsigned diffC = diff + diff2nn + diffn2n;
         diffD += diff2nn;
         diffE += diffn2n;
@@ -703,10 +683,10 @@ template <typename T> __global__ void filterDirMap(const EEDI2Param d, const T *
   if (mskp[x] != peak)
     return;
 
-  int val0 = dmskpp[x - 1], val1 = dmskpp[x], val2 = dmskpp[x + 1], val3 = dmskp[x - 1], val4 = dmskp[x],
-      val5 = dmskp[x + 1], val6 = dmskpn[x - 1], val7 = dmskpn[x], val8 = dmskpn[x + 1];
-  auto cond0 = val0 != peak, cond1 = val1 != peak, cond2 = val2 != peak, cond3 = val3 != peak, cond4 = val4 != peak,
-       cond5 = val5 != peak, cond6 = val6 != peak, cond7 = val7 != peak, cond8 = val8 != peak;
+  int val0 = dmskpp[x - 1], val1 = dmskpp[x], val2 = dmskpp[x + 1], val3 = dmskp[x - 1], val4 = dmskp[x], val5 = dmskp[x + 1],
+      val6 = dmskpn[x - 1], val7 = dmskpn[x], val8 = dmskpn[x + 1];
+  auto cond0 = val0 != peak, cond1 = val1 != peak, cond2 = val2 != peak, cond3 = val3 != peak, cond4 = val4 != peak, cond5 = val5 != peak,
+       cond6 = val6 != peak, cond7 = val7 != peak, cond8 = val8 != peak;
   int order[] = {
       cond0 ? val0 : intmax, cond1 ? val1 : intmax, cond2 ? val2 : intmax, cond3 ? val3 : intmax, cond4 ? val4 : intmax,
       cond5 ? val5 : intmax, cond6 ? val6 : intmax, cond7 ? val7 : intmax, cond8 ? val8 : intmax,
@@ -756,10 +736,10 @@ template <typename T> __global__ void expandDirMap(const EEDI2Param d, const T *
   if (dmskp[x] != peak || mskp[x] != peak)
     return;
 
-  int val0 = dmskpp[x - 1], val1 = dmskpp[x], val2 = dmskpp[x + 1], val3 = dmskp[x - 1], val5 = dmskp[x + 1],
-      val6 = dmskpn[x - 1], val7 = dmskpn[x], val8 = dmskpn[x + 1];
-  auto cond0 = val0 != peak, cond1 = val1 != peak, cond2 = val2 != peak, cond3 = val3 != peak, cond5 = val5 != peak,
-       cond6 = val6 != peak, cond7 = val7 != peak, cond8 = val8 != peak;
+  int val0 = dmskpp[x - 1], val1 = dmskpp[x], val2 = dmskpp[x + 1], val3 = dmskp[x - 1], val5 = dmskp[x + 1], val6 = dmskpn[x - 1],
+      val7 = dmskpn[x], val8 = dmskpn[x + 1];
+  auto cond0 = val0 != peak, cond1 = val1 != peak, cond2 = val2 != peak, cond3 = val3 != peak, cond5 = val5 != peak, cond6 = val6 != peak,
+       cond7 = val7 != peak, cond8 = val8 != peak;
   int order[] = {
       cond0 ? val0 : intmax, cond1 ? val1 : intmax, cond2 ? val2 : intmax, cond3 ? val3 : intmax,
       cond5 ? val5 : intmax, cond6 ? val6 : intmax, cond7 ? val7 : intmax, cond8 ? val8 : intmax,
@@ -814,8 +794,7 @@ template <typename T> __global__ void filterMap(const EEDI2Param d, const T *msk
   auto l = cond ? mmax(-x, dir) : 0;
   auto r = cond ? 0 : mmin(width - x - 1, dir);
   for (int j = l; j <= r; j++) {
-    if ((abs(dmskpp[x + j] - dmskp[x]) > lim && dmskpp[x + j] != peak) ||
-        (dmskp[x + j] == peak && dmskpp[x + j] == peak) ||
+    if ((abs(dmskpp[x + j] - dmskp[x]) > lim && dmskpp[x + j] != peak) || (dmskp[x + j] == peak && dmskpp[x + j] == peak) ||
         (abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
       ict = true;
       break;
@@ -826,8 +805,7 @@ template <typename T> __global__ void filterMap(const EEDI2Param d, const T *msk
     auto l = cond ? 0 : mmax(-x, -dir);
     auto r = cond ? mmin(width - x - 1, -dir) : 0;
     for (int j = l; j <= r; j++) {
-      if ((abs(dmskpn[x + j] - dmskp[x]) > lim && dmskpn[x + j] != peak) ||
-          (dmskpn[x + j] == peak && dmskp[x + j] == peak) ||
+      if ((abs(dmskpn[x + j] - dmskp[x]) > lim && dmskpn[x + j] != peak) || (dmskpn[x + j] == peak && dmskp[x + j] == peak) ||
           (abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
         icb = true;
         break;
@@ -854,10 +832,8 @@ template <typename T> __global__ void markDirections2X(const EEDI2Param d, const
   if (mskp[x] != peak && mskpn[x] != peak)
     return;
 
-  int val0 = dmskp[x - 1], val1 = dmskp[x], val2 = dmskp[x + 1], val6 = dmskpn[x - 1], val7 = dmskpn[x],
-      val8 = dmskpn[x + 1];
-  auto cond0 = val0 != peak, cond1 = val1 != peak, cond2 = val2 != peak, cond6 = val6 != peak, cond7 = val7 != peak,
-       cond8 = val8 != peak;
+  int val0 = dmskp[x - 1], val1 = dmskp[x], val2 = dmskp[x + 1], val6 = dmskpn[x - 1], val7 = dmskpn[x], val8 = dmskpn[x + 1];
+  auto cond0 = val0 != peak, cond1 = val1 != peak, cond2 = val2 != peak, cond6 = val6 != peak, cond7 = val7 != peak, cond8 = val8 != peak;
   int order[] = {
       cond0 ? val0 : intmax, cond1 ? val1 : intmax, cond2 ? val2 : intmax,
       cond6 ? val6 : intmax, cond7 ? val7 : intmax, cond8 ? val8 : intmax,
@@ -912,11 +888,11 @@ template <typename T> __global__ void filterDirMap2X(const EEDI2Param d, const T
     return;
 
   // XXX: we are safe because dmsk won't be the first or last plane in pool
-  int val0 = dmskpp[x - 1], val1 = dmskpp[x], val2 = dmskpp[x + 1], val3 = dmskp[x - 1], val4 = dmskp[x],
-      val5 = dmskp[x + 1], val6 = dmskpn[x - 1], val7 = dmskpn[x], val8 = dmskpn[x + 1];
-  auto cond0 = val0 != peak && y > 1, cond1 = val1 != peak && y > 1, cond2 = val2 != peak && y > 1,
-       cond3 = val3 != peak, cond4 = val4 != peak, cond5 = val5 != peak, cond6 = val6 != peak && y < height - 2,
-       cond7 = val7 != peak && y < height - 2, cond8 = val8 != peak && y < height - 2;
+  int val0 = dmskpp[x - 1], val1 = dmskpp[x], val2 = dmskpp[x + 1], val3 = dmskp[x - 1], val4 = dmskp[x], val5 = dmskp[x + 1],
+      val6 = dmskpn[x - 1], val7 = dmskpn[x], val8 = dmskpn[x + 1];
+  auto cond0 = val0 != peak && y > 1, cond1 = val1 != peak && y > 1, cond2 = val2 != peak && y > 1, cond3 = val3 != peak,
+       cond4 = val4 != peak, cond5 = val5 != peak, cond6 = val6 != peak && y < height - 2, cond7 = val7 != peak && y < height - 2,
+       cond8 = val8 != peak && y < height - 2;
   int order[] = {
       cond0 ? val0 : intmax, cond1 ? val1 : intmax, cond2 ? val2 : intmax, cond3 ? val3 : intmax, cond4 ? val4 : intmax,
       cond5 ? val5 : intmax, cond6 ? val6 : intmax, cond7 ? val7 : intmax, cond8 ? val8 : intmax,
@@ -968,11 +944,11 @@ template <typename T> __global__ void expandDirMap2X(const EEDI2Param d, const T
     return;
 
   // XXX: we are safe because dmsk won't be the first or last plane in pool
-  int val0 = dmskpp[x - 1], val1 = dmskpp[x], val2 = dmskpp[x + 1], val3 = dmskp[x - 1], val5 = dmskp[x + 1],
-      val6 = dmskpn[x - 1], val7 = dmskpn[x], val8 = dmskpn[x + 1];
-  auto cond0 = val0 != peak && y > 1, cond1 = val1 != peak && y > 1, cond2 = val2 != peak && y > 1,
-       cond3 = val3 != peak, cond5 = val5 != peak, cond6 = val6 != peak && y < height - 2,
-       cond7 = val7 != peak && y < height - 2, cond8 = val8 != peak && y < height - 2;
+  int val0 = dmskpp[x - 1], val1 = dmskpp[x], val2 = dmskpp[x + 1], val3 = dmskp[x - 1], val5 = dmskp[x + 1], val6 = dmskpn[x - 1],
+      val7 = dmskpn[x], val8 = dmskpn[x + 1];
+  auto cond0 = val0 != peak && y > 1, cond1 = val1 != peak && y > 1, cond2 = val2 != peak && y > 1, cond3 = val3 != peak,
+       cond5 = val5 != peak, cond6 = val6 != peak && y < height - 2, cond7 = val7 != peak && y < height - 2,
+       cond8 = val8 != peak && y < height - 2;
   int order[] = {
       cond0 ? val0 : intmax, cond1 ? val1 : intmax, cond2 ? val2 : intmax, cond3 ? val3 : intmax,
       cond5 ? val5 : intmax, cond6 ? val6 : intmax, cond7 ? val7 : intmax, cond8 ? val8 : intmax,
@@ -1066,16 +1042,14 @@ template <typename T> __global__ void fillGaps2X(const EEDI2Param d, const T *ms
   if (maxb == -twenty)
     maxb = minb = twenty;
 
-  const int thresh =
-      mmax(mmax(abs(forward - neutral), abs(back - neutral)) / 4, eight + 0, abs(mint - maxt), abs(minb - maxb));
+  const int thresh = mmax(mmax(abs(forward - neutral), abs(back - neutral)) / 4, eight + 0, abs(mint - maxt), abs(minb - maxb));
   const unsigned lim = mmin(mmax(abs(forward - neutral), abs(back - neutral)) >> shift2, 6);
   if (abs(forward - back) <= thresh && (v - u - 1 <= lim || tc || bc)) {
     out_tmp = (x - u) | (v - x) << 8u;
   }
 }
 
-template <typename T>
-__global__ void fillGaps2XStep2(const EEDI2Param d, const T *msk, const T *dmsk, const T *tmp, T *dst) {
+template <typename T> __global__ void fillGaps2XStep2(const EEDI2Param d, const T *msk, const T *dmsk, const T *tmp, T *dst) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -1115,8 +1089,7 @@ __global__ void fillGaps2XStep2(const EEDI2Param d, const T *msk, const T *dmsk,
   out = back + round_div((forward - back) * (x - 1 - u), (v - u));
 }
 
-template <typename T>
-__global__ void interpolateLattice(const EEDI2Param d, const T *omsk, const T *dmsk, T *dst, T *dmsk_2) {
+template <typename T> __global__ void interpolateLattice(const EEDI2Param d, const T *omsk, const T *dmsk, T *dst, T *dmsk_2) {
   setup_kernel2x;
 
   auto omskp = lineOff(omsk, -1);
@@ -1143,10 +1116,9 @@ __global__ void interpolateLattice(const EEDI2Param d, const T *omsk, const T *d
 
   if (lim < nine) {
     const unsigned sum = (dstp[x - 1] + dstp[x] + dstp[x + 1] + dstpnn[x - 1] + dstpnn[x] + dstpnn[x + 1]) >> shift;
-    const unsigned sumsq =
-        (dstp[x - 1] >> shift) * (dstp[x - 1] >> shift) + (dstp[x] >> shift) * (dstp[x] >> shift) +
-        (dstp[x + 1] >> shift) * (dstp[x + 1] >> shift) + (dstpnn[x - 1] >> shift) * (dstpnn[x - 1] >> shift) +
-        (dstpnn[x] >> shift) * (dstpnn[x] >> shift) + (dstpnn[x + 1] >> shift) * (dstpnn[x + 1] >> shift);
+    const unsigned sumsq = (dstp[x - 1] >> shift) * (dstp[x - 1] >> shift) + (dstp[x] >> shift) * (dstp[x] >> shift) +
+                           (dstp[x + 1] >> shift) * (dstp[x + 1] >> shift) + (dstpnn[x - 1] >> shift) * (dstpnn[x - 1] >> shift) +
+                           (dstpnn[x] >> shift) * (dstpnn[x] >> shift) + (dstpnn[x + 1] >> shift) * (dstpnn[x + 1] >> shift);
     if (6 * sumsq - sum * sum < 576) {
       out = (dstp[x] + dstpnn[x] + 1) / 2;
       mout = peak;
@@ -1156,11 +1128,9 @@ __global__ void interpolateLattice(const EEDI2Param d, const T *omsk, const T *d
 
   if (x > 1 && x < width - 2 &&
       ((dstp[x] < mmax(dstp[x - 2], dstp[x - 1]) - three && dstp[x] < mmax(dstp[x + 2], dstp[x + 1]) - three &&
-        dstpnn[x] < mmax(dstpnn[x - 2], dstpnn[x - 1]) - three &&
-        dstpnn[x] < mmax(dstpnn[x + 2], dstpnn[x + 1]) - three) ||
+        dstpnn[x] < mmax(dstpnn[x - 2], dstpnn[x - 1]) - three && dstpnn[x] < mmax(dstpnn[x + 2], dstpnn[x + 1]) - three) ||
        (dstp[x] > mmin(dstp[x - 2], dstp[x - 1]) + three && dstp[x] > mmin(dstp[x + 2], dstp[x + 1]) + three &&
-        dstpnn[x] > mmin(dstpnn[x - 2], dstpnn[x - 1]) + three &&
-        dstpnn[x] > mmin(dstpnn[x + 2], dstpnn[x + 1]) + three))) {
+        dstpnn[x] > mmin(dstpnn[x - 2], dstpnn[x - 1]) + three && dstpnn[x] > mmin(dstpnn[x + 2], dstpnn[x + 1]) + three))) {
     out = (dstp[x] + dstpnn[x] + 1) / 2;
     mout = neutral;
     return;
@@ -1173,9 +1143,8 @@ __global__ void interpolateLattice(const EEDI2Param d, const T *omsk, const T *d
   unsigned val = (dstp[x] + dstpnn[x] + 1) / 2;
 
   for (int u = uStart; u <= uStop; u++) {
-    const unsigned diff = abs(dstp[x - 1] - dstpnn[x - u - 1]) + abs(dstp[x] - dstpnn[x - u]) +
-                          abs(dstp[x + 1] - dstpnn[x - u + 1]) + abs(dstpnn[x - 1] - dstp[x + u - 1]) +
-                          abs(dstpnn[x] - dstp[x + u]) + abs(dstpnn[x + 1] - dstp[x + u + 1]);
+    const unsigned diff = abs(dstp[x - 1] - dstpnn[x - u - 1]) + abs(dstp[x] - dstpnn[x - u]) + abs(dstp[x + 1] - dstpnn[x - u + 1]) +
+                          abs(dstpnn[x - 1] - dstp[x + u - 1]) + abs(dstpnn[x] - dstp[x + u]) + abs(dstpnn[x + 1] - dstp[x + u + 1]);
     if (diff < min &&
         ((omskp[x - 1 + u] != peak && abs(omskp[x - 1 + u] - dmskp[x]) <= lim) ||
          (omskp[x + u] != peak && abs(omskp[x + u] - dmskp[x]) <= lim) ||
@@ -1183,15 +1152,13 @@ __global__ void interpolateLattice(const EEDI2Param d, const T *omsk, const T *d
         ((omskn[x - 1 - u] != peak && abs(omskn[x - 1 - u] - dmskp[x]) <= lim) ||
          (omskn[x - u] != peak && abs(omskn[x - u] - dmskp[x]) <= lim) ||
          (omskn[x + 1 - u] != peak && abs(omskn[x + 1 - u] - dmskp[x]) <= lim))) {
-      const unsigned diff2 = abs(dstp[x + u / 2 - 1] - dstpnn[x - u / 2 - 1]) +
-                             abs(dstp[x + u / 2] - dstpnn[x - u / 2]) +
+      const unsigned diff2 = abs(dstp[x + u / 2 - 1] - dstpnn[x - u / 2 - 1]) + abs(dstp[x + u / 2] - dstpnn[x - u / 2]) +
                              abs(dstp[x + u / 2 + 1] - dstpnn[x - u / 2 + 1]);
-      if (diff2 < d.nt4 && (((abs(omskp[x + u / 2] - omskn[x - u / 2]) <= lim ||
-                              abs(omskp[x + u / 2] - omskn[x - ((u + 1) / 2)]) <= lim) &&
-                             omskp[x + u / 2] != peak) ||
-                            ((abs(omskp[x + ((u + 1) / 2)] - omskn[x - u / 2]) <= lim ||
-                              abs(omskp[x + ((u + 1) / 2)] - omskn[x - ((u + 1) / 2)]) <= lim) &&
-                             omskp[x + ((u + 1) / 2)] != peak))) {
+      if (diff2 < d.nt4 &&
+          (((abs(omskp[x + u / 2] - omskn[x - u / 2]) <= lim || abs(omskp[x + u / 2] - omskn[x - ((u + 1) / 2)]) <= lim) &&
+            omskp[x + u / 2] != peak) ||
+           ((abs(omskp[x + ((u + 1) / 2)] - omskn[x - u / 2]) <= lim || abs(omskp[x + ((u + 1) / 2)] - omskn[x - ((u + 1) / 2)]) <= lim) &&
+            omskp[x + ((u + 1) / 2)] != peak))) {
         if ((abs(dmskp[x] - omskp[x + u / 2]) <= lim || abs(dmskp[x] - omskp[x + ((u + 1) / 2)]) <= lim) &&
             (abs(dmskp[x] - omskn[x - u / 2]) <= lim || abs(dmskp[x] - omskn[x - ((u + 1) / 2)]) <= lim)) {
           val = (dstp[x + u / 2] + dstp[x + ((u + 1) / 2)] + dstpnn[x - u / 2] + dstpnn[x - ((u + 1) / 2)] + 2) / 4;
@@ -1216,9 +1183,9 @@ __global__ void interpolateLattice(const EEDI2Param d, const T *omsk, const T *d
     for (int u = uStart2; u <= uStop2; u++) {
       const int p1 = dstp[x + u / 2] + dstp[x + ((u + 1) / 2)];
       const int p2 = dstpnn[x - u / 2] + dstpnn[x - ((u + 1) / 2)];
-      const unsigned diff = abs(dstp[x - 1] - dstpnn[x - u - 1]) + abs(dstp[x] - dstpnn[x - u]) +
-                            abs(dstp[x + 1] - dstpnn[x - u + 1]) + abs(dstpnn[x - 1] - dstp[x + u - 1]) +
-                            abs(dstpnn[x] - dstp[x + u]) + abs(dstpnn[x + 1] - dstp[x + u + 1]) + abs(p1 - p2);
+      const unsigned diff = abs(dstp[x - 1] - dstpnn[x - u - 1]) + abs(dstp[x] - dstpnn[x - u]) + abs(dstp[x + 1] - dstpnn[x - u + 1]) +
+                            abs(dstpnn[x - 1] - dstp[x + u - 1]) + abs(dstpnn[x] - dstp[x + u]) + abs(dstpnn[x + 1] - dstp[x + u + 1]) +
+                            abs(p1 - p2);
       if (diff < min) {
         const unsigned valt = (p1 + p2 + 2) / 4;
         if (valt >= minm && valt <= maxm) {
@@ -1251,15 +1218,14 @@ template <typename T> __global__ void postProcess(const EEDI2Param d, const T *n
     out = (dstpp[x] + dstpn[x] + 1) / 2;
 }
 
-template <typename T>
-void VS_CC eedi2Init(VSMap *_in, VSMap *_out, void **instanceData, VSNode *node, VSCore *_core, const VSAPI *vsapi) {
+template <typename T> void VS_CC eedi2Init(VSMap *_in, VSMap *_out, void **instanceData, VSNode *node, VSCore *_core, const VSAPI *vsapi) {
   auto data = static_cast<EEDI2Data<T> *>(*instanceData);
   vsapi->setVideoInfo(data->firstInstance().getOutputVI(), 1, node);
 }
 
 template <typename T>
-const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason, void **instanceData, void **_frameData,
-                                      VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
+const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason, void **instanceData, void **_frameData, VSFrameContext *frameCtx,
+                                      VSCore *core, const VSAPI *vsapi) {
 
   auto data = static_cast<EEDI2Data<T> *>(*instanceData);
   const VSFrameRef *out = nullptr;
@@ -1291,8 +1257,8 @@ template <typename T> void eedi2CreateInner(const VSMap *in, VSMap *out, const V
     if (err)
       num_streams = 1;
     auto data = new (num_streams) EEDI2Data<T>(in, vsapi);
-    vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>, eedi2Free<T>,
-                        num_streams > 1 ? fmParallel : fmParallelRequests, 0, data, core);
+    vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>, eedi2Free<T>, num_streams > 1 ? fmParallel : fmParallelRequests,
+                        0, data, core);
   } catch (const std::exception &exc) {
     vsapi->setError(out, ("EEDI2CUDA: "s + exc.what()).c_str());
     return;
