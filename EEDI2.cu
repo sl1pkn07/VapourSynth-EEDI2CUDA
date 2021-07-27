@@ -1,9 +1,12 @@
 #include <algorithm>
 #include <atomic>
+#include <cmath>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <utility>
 
 #include <stdint.h>
 
@@ -300,7 +303,22 @@ private:
   EEDI2Item *items() { return reinterpret_cast<EEDI2Item *>(this + 1); }
 
 public:
-  EEDI2Data() : semaphore(num_streams) {}
+  EEDI2Data(const VSMap *in, const VSAPI *vsapi) : semaphore(num_streams) {
+    auto items = this->items();
+    new (items) EEDI2Item(std::piecewise_construct, std::forward_as_tuple(in, vsapi), std::forward_as_tuple());
+    items[0].second.clear();
+    for (unsigned i = 1; i < num_streams; ++i) {
+      new (items + i)
+          EEDI2Item(std::piecewise_construct, std::forward_as_tuple(firstInstance(), vsapi), std::forward_as_tuple());
+      items[i].second.clear();
+    }
+  }
+
+  ~EEDI2Data() {
+    auto items = this->items();
+    for (unsigned i = 0; i < num_streams; ++i)
+      items[i].~EEDI2Item();
+  }
 
   EEDI2Instance<T> &firstInstance() { return items()[0].first; }
 
@@ -329,35 +347,15 @@ public:
     semaphore.post();
   }
 
-  static void *operator new(size_t sz, const VSMap *in, const VSAPI *vsapi) {
-    int err;
-    auto num_streams = vsapi->propGetInt(in, "num_streams", 0, &err);
-    if (err)
-      num_streams = 1;
-    if (num_streams <= 0 || num_streams > 32)
-      throw std::invalid_argument("num_streams must greater than 0 and less or equal to 32");
-    auto *data = static_cast<EEDI2Data *>(::operator new(sizeof(EEDI2Data) + sizeof(EEDI2Item) * num_streams));
-    data->num_streams = static_cast<unsigned>(num_streams);
-    auto items = data->items();
-    new (items)
-        EEDI2Item(std::piecewise_construct, std::forward_as_tuple(in, vsapi), std::forward_as_tuple());
-    items[0].second.clear();
-    for (unsigned i = 1; i < num_streams; ++i) {
-      new (items + i)
-          EEDI2Item(std::piecewise_construct, std::forward_as_tuple(data->firstInstance(), vsapi),
-                    std::forward_as_tuple());
-      items[i].second.clear();
-    }
-    return data;
+  static void *operator new(size_t sz, unsigned num_streams) {
+    auto p = static_cast<EEDI2Data *>(::operator new(sz + sizeof(EEDI2Item) * num_streams));
+    p->num_streams = num_streams;
+    return p;
   }
 
-  static void operator delete(void *p) {
-    auto *data = static_cast<EEDI2Data *>(p);
-    auto items = data->items();
-    for (unsigned i = 0; i < data->num_streams; ++i)
-      items[i].~EEDI2Item();
-    ::operator delete(p);
-  }
+  static void operator delete(void *p, unsigned num_streams) { ::operator delete(p); }
+
+  static void operator delete(void *p) { ::operator delete(p); }
 };
 
 #define setup_kernel                                                                                                   \
@@ -1417,9 +1415,13 @@ template <typename T> void VS_CC eedi2Free(void *instanceData, VSCore *_core, co
 
 template <typename T> void eedi2CreateInner(const VSMap *in, VSMap *out, const VSAPI *vsapi, VSCore *core) {
   try {
-    auto data = new (in, vsapi) EEDI2Data<T>;
+    int err;
+    auto num_streams = boost::numeric_cast<unsigned>(vsapi->propGetInt(in, "num_streams", 0, &err));
+    if (err)
+      num_streams = 1;
+    auto data = new (num_streams) EEDI2Data<T>(in, vsapi);
     vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>, eedi2Free<T>,
-                        data->num_streams > 1 ? fmParallel : fmParallelRequests, 0, data, core);
+                        num_streams > 1 ? fmParallel : fmParallelRequests, 0, data, core);
   } catch (const std::exception &exc) {
     vsapi->setError(out, ("EEDI2CUDA: "s + exc.what()).c_str());
     return;
