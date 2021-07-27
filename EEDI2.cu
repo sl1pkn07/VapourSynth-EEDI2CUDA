@@ -30,10 +30,7 @@ class CUDAError : public std::runtime_error {
 
 [[noreturn]] void unreachable() { assert(false); }
 
-template<typename Td, typename Ts>
-void numeric_cast_to(Td& dst, Ts src) {
-  dst = boost::numeric_cast<Td>(src);
-}
+template <typename Td, typename Ts> void numeric_cast_to(Td &dst, Ts src) { dst = boost::numeric_cast<Td>(src); }
 
 struct EEDI2Param {
   uint32_t d_pitch;
@@ -371,8 +368,8 @@ public:
   constexpr T shift2 = shift + 2, neutral = peak / 2;                                                                  \
   constexpr int intmax = std::numeric_limits<int>::max()
 
-__constant__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12, 12, 12, 12,
-                               12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};
+__device__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12, 12, 12, 12,
+                             12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};
 
 #define setup_kernel2x                                                                                                 \
   setup_kernel;                                                                                                        \
