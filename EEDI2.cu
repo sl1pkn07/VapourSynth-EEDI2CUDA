@@ -1023,7 +1023,7 @@ template <typename T> __global__ void fillGaps2X(const EEDI2Param d, const T *ms
   unsigned u = x - 1, v = x + 1;
   int back = fiveHundred, forward = -fiveHundred;
 
-  while (u && x - u < 255) {
+  while (u && x - u < 16) {
     if (dmskp[u] != peak) {
       back = dmskp[u];
       break;
@@ -1033,7 +1033,7 @@ template <typename T> __global__ void fillGaps2X(const EEDI2Param d, const T *ms
     u--;
   }
 
-  while (v < width && v - x < 255) {
+  while (v < width && v - x < 16) {
     if (dmskp[v] != peak) {
       forward = dmskp[v];
       break;
@@ -1047,30 +1047,16 @@ template <typename T> __global__ void fillGaps2X(const EEDI2Param d, const T *ms
   int mint = fiveHundred, maxt = -twenty;
   int minb = fiveHundred, maxb = -twenty;
 
-  for (unsigned j = u; j <= v; j++) {
-    if (tc) {
-      if (y <= 2 || dmskpp[j] == peak || (mskpp[j] != peak && mskp[j] != peak)) {
-        tc = false;
-        mint = maxt = twenty;
-      } else {
-        if (dmskpp[j] < mint)
-          mint = dmskpp[j];
-        if (dmskpp[j] > maxt)
-          maxt = dmskpp[j];
-      }
-    }
+  for (unsigned j = u; j <= v && tc; j++) {
+    tc = !(y <= 2 || dmskpp[j] == peak || (mskpp[j] != peak && mskp[j] != peak));
+    mint = tc ? mmin(mint, dmskpp[j] + 0) : twenty;
+    maxt = tc ? mmax(maxt, dmskpp[j] + 0) : twenty;
+  }
 
-    if (bc) {
-      if (y >= height - 3 || dmskpn[j] == peak || (mskpn[j] != peak && mskpnn[j] != peak)) {
-        bc = false;
-        minb = maxb = twenty;
-      } else {
-        if (dmskpn[j] < minb)
-          minb = dmskpn[j];
-        if (dmskpn[j] > maxb)
-          maxb = dmskpn[j];
-      }
-    }
+  for (unsigned j = u; j <= v && bc; j++) {
+    bc = !(y >= height - 3 || dmskpn[j] == peak || (mskpn[j] != peak && mskpnn[j] != peak));
+    minb = bc ? mmin(minb, dmskpn[j] + 0) : twenty;
+    maxb = bc ? mmax(maxb, dmskpn[j] + 0) : twenty;
   }
 
   if (maxt == -twenty)
@@ -1082,9 +1068,6 @@ template <typename T> __global__ void fillGaps2X(const EEDI2Param d, const T *ms
       mmax(mmax(abs(forward - neutral), abs(back - neutral)) / 4, eight + 0, abs(mint - maxt), abs(minb - maxb));
   const unsigned lim = mmin(mmax(abs(forward - neutral), abs(back - neutral)) >> shift2, 6);
   if (abs(forward - back) <= thresh && (v - u - 1 <= lim || tc || bc)) {
-    //    const float step = static_cast<float>(forward - back) / (v - u);
-    //    for (unsigned j = 0; j < v - u - 1; j++)
-    //      dstp[u + j + 1] = back + static_cast<int>(j * step + 0.5);
     out_tmp = (x - u) | (v - x) << 8u;
   }
 }
@@ -1127,7 +1110,7 @@ __global__ void fillGaps2XStep2(const EEDI2Param d, const T *msk, const T *dmsk,
   int back = dmskp[u];
   int forward = dmskp[v];
 
-  out = back + __float2int_ru((forward - back) * (x - 1 - u) * 1.f / (v - u));
+  out = back + round_div((forward - back) * (x - 1 - u), (v - u));
 }
 
 template <typename T> __global__ void interpolateLattice(const EEDI2Param d, const T *omsk, T *dmsk, T *dst) {
