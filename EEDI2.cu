@@ -438,6 +438,11 @@ template <typename T, typename... Args> __device__ __forceinline__ T mmin(T firs
   return first < candidate ? first : candidate;
 }
 
+template <typename T> __device__ T round_div(T a, T b) {
+  // XXX: only for same sign
+  return (a + (b / 2)) / b;
+}
+
 template <typename T> __global__ void buildEdgeMask(const EEDI2Param d, const T *src, T *dst) {
   setup_kernel;
 
@@ -694,48 +699,33 @@ template <typename T> __global__ void filterDirMap(const EEDI2Param d, const T *
   if (mskp[x] != peak)
     return;
 
-  int order[9];
-  unsigned u = 0;
-
-  if (dmskpp[x - 1] != peak)
-    order[u++] = dmskpp[x - 1];
-  if (dmskpp[x] != peak)
-    order[u++] = dmskpp[x];
-  if (dmskpp[x + 1] != peak)
-    order[u++] = dmskpp[x + 1];
-  if (dmskp[x - 1] != peak)
-    order[u++] = dmskp[x - 1];
-  if (dmskp[x] != peak)
-    order[u++] = dmskp[x];
-  if (dmskp[x + 1] != peak)
-    order[u++] = dmskp[x + 1];
-  if (dmskpn[x - 1] != peak)
-    order[u++] = dmskpn[x - 1];
-  if (dmskpn[x] != peak)
-    order[u++] = dmskpn[x];
-  if (dmskpn[x + 1] != peak)
-    order[u++] = dmskpn[x + 1];
+  int val0 = dmskpp[x - 1], val1 = dmskpp[x], val2 = dmskpp[x + 1], val3 = dmskp[x - 1], val4 = dmskp[x],
+      val5 = dmskp[x + 1], val6 = dmskpn[x - 1], val7 = dmskpn[x], val8 = dmskpn[x + 1];
+  auto cond0 = val0 != peak, cond1 = val1 != peak, cond2 = val2 != peak, cond3 = val3 != peak, cond4 = val4 != peak,
+       cond5 = val5 != peak, cond6 = val6 != peak, cond7 = val7 != peak, cond8 = val8 != peak;
+  constexpr int intmax = std::numeric_limits<int>::max();
+  int order[] = {
+      cond0 ? val0 : intmax, cond1 ? val1 : intmax, cond2 ? val2 : intmax, cond3 ? val3 : intmax, cond4 ? val4 : intmax,
+      cond5 ? val5 : intmax, cond6 ? val6 : intmax, cond7 ? val7 : intmax, cond8 ? val8 : intmax,
+  };
+  unsigned u = cond0 + cond1 + cond2 + cond3 + cond4 + cond5 + cond6 + cond7 + cond8;
 
   if (u < 4) {
     out = peak;
     return;
   }
 
-  for (auto t = u; t < 9; ++t)
-    order[t] = std::numeric_limits<int>::max();
-
   bose_sort_array(order);
 
   const int mid = (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
   const int lim = limlut[abs(mid - neutral) >> shift2] << shift;
   int sum = 0;
-  unsigned count = 0;
+  int count = 0;
 
-  for (unsigned i = 0; i < u; i++) {
-    if (abs(order[i] - mid) <= lim) {
-      sum += order[i];
-      count++;
-    }
+  for (unsigned i = 0; i < 9; i++) {
+    auto cond = abs(order[i] - mid) <= lim;
+    sum += cond ? order[i] : 0;
+    count += cond;
   }
 
   if (count < 4 || (count < 5 && dmskp[x] == peak)) {
@@ -743,7 +733,7 @@ template <typename T> __global__ void filterDirMap(const EEDI2Param d, const T *
     return;
   }
 
-  out = static_cast<int>(static_cast<float>(sum + mid) / (count + 1) + 0.5f);
+  out = round_div(sum + mid, count + 1);
 }
 
 template <typename T> __global__ void expandDirMap(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
