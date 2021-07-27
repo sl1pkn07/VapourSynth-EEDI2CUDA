@@ -162,6 +162,8 @@ private:
       mem = &dst2;
       for (size_t i = 1; i < numMem2x; ++i)
         mem[i] = reinterpret_cast<T *>(reinterpret_cast<char *>(mem[i - 1]) + d_pitch * height * 2);
+    } else {
+      dst2 = nullptr;
     }
 
     try_cuda(cudaHostAlloc(&h_src, d_pitch * height, cudaHostAllocWriteCombined));
