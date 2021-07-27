@@ -353,6 +353,8 @@ public:
   static void operator delete(void *p) { ::operator delete(p); }
 };
 
+#define KERNEL __global__ __launch_bounds__(64)
+
 #define setup_kernel                                                                                                                       \
   uint16_t width = d.width, height = d.height, x = threadIdx.x + blockIdx.x * blockDim.x, y = threadIdx.y + blockIdx.y * blockDim.y;       \
   constexpr T shift = sizeof(T) * 8 - 8, peak = std::numeric_limits<T>::max(), ten = 10 << shift, twleve = 12 << shift,                    \
@@ -439,7 +441,7 @@ template <typename T> __device__ T round_div(T a, T b) {
   return (a + (b / 2)) / b;
 }
 
-template <typename T> __global__ void buildEdgeMask(const EEDI2Param d, const T *src, T *dst) {
+template <typename T> KERNEL void buildEdgeMask(const EEDI2Param d, const T *src, T *dst) {
   setup_kernel;
 
   auto srcp = line(src);
@@ -478,7 +480,7 @@ template <typename T> __global__ void buildEdgeMask(const EEDI2Param d, const T 
     out = peak;
 }
 
-template <typename T> __global__ void erode(const EEDI2Param d, const T *msk, T *dst) {
+template <typename T> KERNEL void erode(const EEDI2Param d, const T *msk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -505,7 +507,7 @@ template <typename T> __global__ void erode(const EEDI2Param d, const T *msk, T 
   out = mskp[x] == peak && count < d.estr ? 0 : mskp[x];
 }
 
-template <typename T> __global__ void dilate(const EEDI2Param d, const T *msk, T *dst) {
+template <typename T> KERNEL void dilate(const EEDI2Param d, const T *msk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -532,7 +534,7 @@ template <typename T> __global__ void dilate(const EEDI2Param d, const T *msk, T
   out = mskp[x] == 0 && count >= d.dstr ? peak : mskp[x];
 }
 
-template <typename T> __global__ void removeSmallHorzGaps(const EEDI2Param d, const T *msk, T *dst) {
+template <typename T> KERNEL void removeSmallHorzGaps(const EEDI2Param d, const T *msk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -553,7 +555,7 @@ template <typename T> __global__ void removeSmallHorzGaps(const EEDI2Param d, co
   out = mskp[x] ? a : b;
 }
 
-template <typename T> __global__ void calcDirections(const EEDI2Param d, const T *src, const T *msk, T *dst) {
+template <typename T> KERNEL void calcDirections(const EEDI2Param d, const T *src, const T *msk, T *dst) {
   setup_kernel;
 
   auto srcp = line(src);
@@ -666,7 +668,7 @@ template <typename T> __global__ void calcDirections(const EEDI2Param d, const T
   }
 }
 
-template <typename T> __global__ void filterDirMap(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
+template <typename T> KERNEL void filterDirMap(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -719,7 +721,7 @@ template <typename T> __global__ void filterDirMap(const EEDI2Param d, const T *
   out = round_div(sum + mid, count + 1);
 }
 
-template <typename T> __global__ void expandDirMap(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
+template <typename T> KERNEL void expandDirMap(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -768,7 +770,7 @@ template <typename T> __global__ void expandDirMap(const EEDI2Param d, const T *
   out = round_div(sum + mid, count + 1);
 }
 
-template <typename T> __global__ void filterMap(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
+template <typename T> KERNEL void filterMap(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
   setup_kernel;
 
   auto mskp = line(msk);
@@ -817,7 +819,7 @@ template <typename T> __global__ void filterMap(const EEDI2Param d, const T *msk
   }
 }
 
-template <typename T> __global__ void markDirections2X(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
+template <typename T> KERNEL void markDirections2X(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -869,7 +871,7 @@ template <typename T> __global__ void markDirections2X(const EEDI2Param d, const
   out = round_div(sum + mid, count + 1);
 }
 
-template <typename T> __global__ void filterDirMap2X(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
+template <typename T> KERNEL void filterDirMap2X(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -925,7 +927,7 @@ template <typename T> __global__ void filterDirMap2X(const EEDI2Param d, const T
   out = round_div(sum + mid, count + 1);
 }
 
-template <typename T> __global__ void expandDirMap2X(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
+template <typename T> KERNEL void expandDirMap2X(const EEDI2Param d, const T *msk, const T *dmsk, T *dst) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -977,7 +979,7 @@ template <typename T> __global__ void expandDirMap2X(const EEDI2Param d, const T
   out = round_div(sum + mid, count + 1);
 }
 
-template <typename T> __global__ void fillGaps2X(const EEDI2Param d, const T *msk, const T *dmsk, T *tmp) {
+template <typename T> KERNEL void fillGaps2X(const EEDI2Param d, const T *msk, const T *dmsk, T *tmp) {
   setup_kernel2x;
   constexpr int fiveHundred = 500 << shift;
 
@@ -1049,7 +1051,7 @@ template <typename T> __global__ void fillGaps2X(const EEDI2Param d, const T *ms
   }
 }
 
-template <typename T> __global__ void fillGaps2XStep2(const EEDI2Param d, const T *msk, const T *dmsk, const T *tmp, T *dst) {
+template <typename T> KERNEL void fillGaps2XStep2(const EEDI2Param d, const T *msk, const T *dmsk, const T *tmp, T *dst) {
   setup_kernel2x;
 
   auto mskp = lineOff(msk, -1);
@@ -1089,7 +1091,7 @@ template <typename T> __global__ void fillGaps2XStep2(const EEDI2Param d, const 
   out = back + round_div((forward - back) * (x - 1 - u), (v - u));
 }
 
-template <typename T> __global__ void interpolateLattice(const EEDI2Param d, const T *omsk, const T *dmsk, T *dst, T *dmsk_2) {
+template <typename T> KERNEL void interpolateLattice(const EEDI2Param d, const T *omsk, const T *dmsk, T *dst, T *dmsk_2) {
   setup_kernel2x;
 
   auto omskp = lineOff(omsk, -1);
@@ -1201,7 +1203,7 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param d, con
   }
 }
 
-template <typename T> __global__ void postProcess(const EEDI2Param d, const T *nmsk, const T *omsk, T *dst) {
+template <typename T> KERNEL void postProcess(const EEDI2Param d, const T *nmsk, const T *omsk, T *dst) {
   setup_kernel2x;
 
   auto nmskp = line(nmsk);
