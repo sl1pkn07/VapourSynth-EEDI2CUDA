@@ -337,18 +337,16 @@ public:
     if (num_streams <= 0 || num_streams > 32)
       throw std::invalid_argument("num_streams must greater than 0 and less or equal to 32");
     auto *data = static_cast<EEDI2Data *>(::operator new(sizeof(EEDI2Data) + sizeof(EEDI2Item) * num_streams));
-    try {
-      data->num_streams = static_cast<unsigned>(num_streams);
-      auto items = data->items();
-      new (items) EEDI2Item(std::piecewise_construct, std::forward_as_tuple(in, vsapi), std::forward_as_tuple());
-      items[0].second.clear();
-      for (unsigned i = 1; i < num_streams; ++i) {
-        new (items + i) EEDI2Item(std::piecewise_construct, std::forward_as_tuple(data->firstInstance(), vsapi),
-                                  std::forward_as_tuple());
-        items[i].second.clear();
-      }
-    } catch (...) {
-      ::operator delete(data);
+    data->num_streams = static_cast<unsigned>(num_streams);
+    auto items = data->items();
+    new (items)
+        EEDI2Item(std::piecewise_construct, std::forward_as_tuple(in, vsapi), std::forward_as_tuple());
+    items[0].second.clear();
+    for (unsigned i = 1; i < num_streams; ++i) {
+      new (items + i)
+          EEDI2Item(std::piecewise_construct, std::forward_as_tuple(data->firstInstance(), vsapi),
+                    std::forward_as_tuple());
+      items[i].second.clear();
     }
     return data;
   }
