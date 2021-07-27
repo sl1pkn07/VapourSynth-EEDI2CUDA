@@ -488,35 +488,23 @@ template <typename T> __global__ void erode(const EEDI2Param d, const T *msk, T 
   auto mskpn = lineOff(msk, 1);
   auto &out = point(dst);
 
-  out = mskp[x];
+  out = 0;
 
   bounds_check3(x, 1, width - 1);
   bounds_check3(y, 1, height - 1);
 
-  if (mskp[x] != peak)
-    return;
-
   unsigned count = 0;
 
-  if (mskpp[x - 1] == peak)
-    count++;
-  if (mskpp[x] == peak)
-    count++;
-  if (mskpp[x + 1] == peak)
-    count++;
-  if (mskp[x - 1] == peak)
-    count++;
-  if (mskp[x + 1] == peak)
-    count++;
-  if (mskpn[x - 1] == peak)
-    count++;
-  if (mskpn[x] == peak)
-    count++;
-  if (mskpn[x + 1] == peak)
-    count++;
+  count += mskpp[x - 1] == peak;
+  count += mskpp[x] == peak;
+  count += mskpp[x + 1] == peak;
+  count += mskp[x - 1] == peak;
+  count += mskp[x + 1] == peak;
+  count += mskpn[x - 1] == peak;
+  count += mskpn[x] == peak;
+  count += mskpn[x + 1] == peak;
 
-  if (count < d.estr)
-    out = 0;
+  out = mskp[x] == peak && count < d.estr ? 0 : mskp[x];
 }
 
 template <typename T> __global__ void dilate(const EEDI2Param d, const T *msk, T *dst) {
@@ -527,35 +515,23 @@ template <typename T> __global__ void dilate(const EEDI2Param d, const T *msk, T
   auto mskpn = lineOff(msk, 1);
   auto &out = point(dst);
 
-  out = mskp[x];
+  out = 0;
 
   bounds_check3(x, 1, width - 1);
   bounds_check3(y, 1, height - 1);
 
-  if (mskp[x] != 0)
-    return;
-
   unsigned count = 0;
 
-  if (mskpp[x - 1] == peak)
-    count++;
-  if (mskpp[x] == peak)
-    count++;
-  if (mskpp[x + 1] == peak)
-    count++;
-  if (mskp[x - 1] == peak)
-    count++;
-  if (mskp[x + 1] == peak)
-    count++;
-  if (mskpn[x - 1] == peak)
-    count++;
-  if (mskpn[x] == peak)
-    count++;
-  if (mskpn[x + 1] == peak)
-    count++;
+  count += mskpp[x - 1] == peak;
+  count += mskpp[x] == peak;
+  count += mskpp[x + 1] == peak;
+  count += mskp[x - 1] == peak;
+  count += mskp[x + 1] == peak;
+  count += mskpn[x - 1] == peak;
+  count += mskpn[x] == peak;
+  count += mskpn[x + 1] == peak;
 
-  if (count >= d.dstr)
-    out = peak;
+  out = mskp[x] == 0 && count >= d.dstr ? peak : mskp[x];
 }
 
 template <typename T> __global__ void removeSmallHorzGaps(const EEDI2Param d, const T *msk, T *dst) {
