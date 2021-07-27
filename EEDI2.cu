@@ -540,20 +540,19 @@ template <typename T> __global__ void removeSmallHorzGaps(const EEDI2Param d, co
   auto mskp = line(msk);
   auto &out = point(dst);
 
-  out = mskp[x];
+  auto orig = mskp[x];
+  out = orig;
 
   bounds_check3(x, 3, width - 3);
   bounds_check3(y, 1, height - 1);
 
-  if (mskp[x]) {
-    if (mskp[x - 3] || mskp[x - 2] || mskp[x - 1] || mskp[x + 1] || mskp[x + 2] || mskp[x + 3])
-      return;
-    out = 0;
-  } else {
-    if ((mskp[x + 1] && (mskp[x - 1] || mskp[x - 2] || mskp[x - 3])) || (mskp[x + 2] && (mskp[x - 1] || mskp[x - 2])) ||
-        (mskp[x + 3] && mskp[x - 1]))
-      out = peak;
-  }
+  auto a = mskp[x - 3] | mskp[x - 2] | mskp[x - 1] | mskp[x + 1] | mskp[x + 2] | mskp[x + 3] ? orig : 0;
+  auto b = (mskp[x + 1] & (mskp[x - 1] | mskp[x - 2] | mskp[x - 3])) | (mskp[x + 2] & (mskp[x - 1] | mskp[x - 2])) |
+                   (mskp[x + 3] & mskp[x - 1])
+               ? peak
+               : orig;
+
+  out = mskp[x] ? a : b;
 }
 
 template <typename T> __global__ void calcDirections(const EEDI2Param d, const T *src, const T *msk, T *dst) {
