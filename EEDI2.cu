@@ -471,10 +471,8 @@ template <typename T> __global__ void buildEdgeMask(const EEDI2Param d, const T 
 
   const unsigned Ix = abs(srcp[x + 1] - srcp[x - 1]) >> shift;
   const unsigned Iy = mmax(abs(srcpp[x] - srcpn[x]), abs(srcpp[x] - srcp[x]), abs(srcp[x] - srcpn[x])) >> shift;
-  if (Ix * Ix + Iy * Iy >= d.mthresh) {
+  if (Ix * Ix + Iy * Iy >= d.mthresh)
     out = peak;
-    return;
-  }
 
   const unsigned Ixx = abs(srcp[x - 1] - 2 * srcp[x] + srcp[x + 1]) >> shift;
   const unsigned Iyy = abs(srcpp[x] - 2 * srcp[x] + srcpn[x]) >> shift;
