@@ -673,8 +673,8 @@ template <typename T> __global__ void calcDirections(const EEDI2Param d, const T
     int count = 0;
 
     for (unsigned i = 0; i < 5; i++) {
-      auto cond = abs(order[i] - mid) <= lim;
-      sum += cond ? order[i] : 0;
+      auto cond = order[i] != intmax && abs(order[i] - mid) <= lim;
+      sum += cond * order[i];
       count += cond;
     }
 
@@ -724,8 +724,8 @@ template <typename T> __global__ void filterDirMap(const EEDI2Param d, const T *
   int count = 0;
 
   for (unsigned i = 0; i < 9; i++) {
-    auto cond = abs(order[i] - mid) <= lim;
-    sum += cond ? order[i] : 0;
+    auto cond = order[i] != intmax && abs(order[i] - mid) <= lim;
+    sum += cond * order[i];
     count += cond;
   }
 
@@ -775,7 +775,7 @@ template <typename T> __global__ void expandDirMap(const EEDI2Param d, const T *
   int count = 0;
 
   for (unsigned i = 0; i < 8; i++) {
-    auto cond = abs(order[i] - mid) <= lim;
+    auto cond = order[i] != intmax && abs(order[i] - mid) <= lim;
     sum += cond * order[i];
     count += cond;
   }
