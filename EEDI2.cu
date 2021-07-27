@@ -1,11 +1,10 @@
-#include <algorithm>
 #include <atomic>
-#include <cmath>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
 #include <stdint.h>
@@ -423,6 +422,22 @@ template <size_t N, typename T> __device__ __forceinline__ void BoseSort(T *arr)
 
 #define bose_sort_array(arr) BoseSort<sizeof(arr) / sizeof((arr)[0])>(arr)
 
+template <typename T> __device__ __forceinline__ T mmax(T last) { return last; }
+
+template <typename T, typename... Args> __device__ __forceinline__ T mmax(T first, Args... remaining) {
+  auto candidate = mmax(remaining...);
+  static_assert(std::is_same<decltype(candidate), T>::value, "arguments must have the same type");
+  return first < candidate ? candidate : first;
+}
+
+template <typename T> __device__ __forceinline__ T mmin(T last) { return last; }
+
+template <typename T, typename... Args> __device__ __forceinline__ T mmin(T first, Args... remaining) {
+  auto candidate = mmin(remaining...);
+  static_assert(std::is_same<decltype(candidate), T>::value, "arguments must have the same type");
+  return first < candidate ? first : candidate;
+}
+
 template <typename T> __global__ void buildEdgeMask(const EEDI2Param d, const T *src, T *dst) {
   setup_kernel;
 
@@ -436,11 +451,10 @@ template <typename T> __global__ void buildEdgeMask(const EEDI2Param d, const T 
   bounds_check3(x, 1, width - 1);
   bounds_check3(y, 1, height - 1);
 
-  if ((std::abs(srcpp[x] - srcp[x]) < ten && std::abs(srcp[x] - srcpn[x]) < ten &&
-       std::abs(srcpp[x] - srcpn[x]) < ten) ||
-      (std::abs(srcpp[x - 1] - srcp[x - 1]) < ten && std::abs(srcp[x - 1] - srcpn[x - 1]) < ten &&
-       std::abs(srcpp[x - 1] - srcpn[x - 1]) < ten && std::abs(srcpp[x + 1] - srcp[x + 1]) < ten &&
-       std::abs(srcp[x + 1] - srcpn[x + 1]) < ten && std::abs(srcpp[x + 1] - srcpn[x + 1]) < ten))
+  if ((abs(srcpp[x] - srcp[x]) < ten && abs(srcp[x] - srcpn[x]) < ten && abs(srcpp[x] - srcpn[x]) < ten) ||
+      (abs(srcpp[x - 1] - srcp[x - 1]) < ten && abs(srcp[x - 1] - srcpn[x - 1]) < ten &&
+       abs(srcpp[x - 1] - srcpn[x - 1]) < ten && abs(srcpp[x + 1] - srcp[x + 1]) < ten &&
+       abs(srcp[x + 1] - srcpn[x + 1]) < ten && abs(srcpp[x + 1] - srcpn[x + 1]) < ten))
     return;
 
   const unsigned sum = (srcpp[x - 1] + srcpp[x] + srcpp[x + 1] + srcp[x - 1] + srcp[x] + srcp[x + 1] + srcpn[x - 1] +
@@ -455,16 +469,15 @@ template <typename T> __global__ void buildEdgeMask(const EEDI2Param d, const T 
   if (9 * sumsq - sum * sum < d.vthresh)
     return;
 
-  const unsigned Ix = std::abs(srcp[x + 1] - srcp[x - 1]) >> shift;
-  const unsigned Iy =
-      std::max({std::abs(srcpp[x] - srcpn[x]), std::abs(srcpp[x] - srcp[x]), std::abs(srcp[x] - srcpn[x])}) >> shift;
+  const unsigned Ix = abs(srcp[x + 1] - srcp[x - 1]) >> shift;
+  const unsigned Iy = mmax(abs(srcpp[x] - srcpn[x]), abs(srcpp[x] - srcp[x]), abs(srcp[x] - srcpn[x])) >> shift;
   if (Ix * Ix + Iy * Iy >= d.mthresh) {
     out = peak;
     return;
   }
 
-  const unsigned Ixx = std::abs(srcp[x - 1] - 2 * srcp[x] + srcp[x + 1]) >> shift;
-  const unsigned Iyy = std::abs(srcpp[x] - 2 * srcp[x] + srcpn[x]) >> shift;
+  const unsigned Ixx = abs(srcp[x - 1] - 2 * srcp[x] + srcp[x + 1]) >> shift;
+  const unsigned Iyy = abs(srcpp[x] - 2 * srcp[x] + srcpn[x]) >> shift;
   if (Ixx + Iyy >= d.lthresh)
     out = peak;
 }
@@ -592,11 +605,11 @@ template <typename T> __global__ void calcDirections(const EEDI2Param d, const T
   if (mskp[x] != peak || (mskp[x - 1] != peak && mskp[x + 1] != peak))
     return;
 
-  const int uStart = std::max(-x + 1, -maxd);
-  const int uStop = std::min(width - 2 - x, maxd);
-  const unsigned min0 = std::abs(srcp[x] - srcpn[x]) + std::abs(srcp[x] - srcpp[x]);
-  unsigned minA = std::min(d.nt19, min0 * 9);
-  unsigned minB = std::min(d.nt13, min0 * 6);
+  const int uStart = mmax(-x + 1, -maxd);
+  const int uStop = mmin(width - 2 - x, maxd);
+  const unsigned min0 = abs(srcp[x] - srcpn[x]) + abs(srcp[x] - srcpp[x]);
+  unsigned minA = mmin(d.nt19, min0 * 9);
+  unsigned minB = mmin(d.nt13, min0 * 6);
   unsigned minC = minA;
   unsigned minD = minB;
   unsigned minE = minB;
@@ -605,14 +618,14 @@ template <typename T> __global__ void calcDirections(const EEDI2Param d, const T
   for (int u = uStart; u <= uStop; u++) {
     if ((y == 1 || mskpp[x - 1 + u] == peak || mskpp[x + u] == peak || mskpp[x + 1 + u] == peak) &&
         (y == height - 2 || mskpn[x - 1 - u] == peak || mskpn[x - u] == peak || mskpn[x + 1 - u] == peak)) {
-      const unsigned diffsn = std::abs(srcp[x - 1] - srcpn[x - 1 - u]) + std::abs(srcp[x] - srcpn[x - u]) +
-                              std::abs(srcp[x + 1] - srcpn[x + 1 - u]);
-      const unsigned diffsp = std::abs(srcp[x - 1] - srcpp[x - 1 + u]) + std::abs(srcp[x] - srcpp[x + u]) +
-                              std::abs(srcp[x + 1] - srcpp[x + 1 + u]);
-      const unsigned diffps = std::abs(srcpp[x - 1] - srcp[x - 1 - u]) + std::abs(srcpp[x] - srcp[x - u]) +
-                              std::abs(srcpp[x + 1] - srcp[x + 1 - u]);
-      const unsigned diffns = std::abs(srcpn[x - 1] - srcp[x - 1 + u]) + std::abs(srcpn[x] - srcp[x + u]) +
-                              std::abs(srcpn[x + 1] - srcp[x + 1 + u]);
+      const unsigned diffsn =
+          abs(srcp[x - 1] - srcpn[x - 1 - u]) + abs(srcp[x] - srcpn[x - u]) + abs(srcp[x + 1] - srcpn[x + 1 - u]);
+      const unsigned diffsp =
+          abs(srcp[x - 1] - srcpp[x - 1 + u]) + abs(srcp[x] - srcpp[x + u]) + abs(srcp[x + 1] - srcpp[x + 1 + u]);
+      const unsigned diffps =
+          abs(srcpp[x - 1] - srcp[x - 1 - u]) + abs(srcpp[x] - srcp[x - u]) + abs(srcpp[x + 1] - srcp[x + 1 - u]);
+      const unsigned diffns =
+          abs(srcpn[x - 1] - srcp[x - 1 + u]) + abs(srcpn[x] - srcp[x + u]) + abs(srcpn[x + 1] - srcp[x + 1 + u]);
       const unsigned diff = diffsn + diffsp + diffps + diffns;
       unsigned diffD = diffsp + diffns;
       unsigned diffE = diffsn + diffps;
@@ -623,10 +636,10 @@ template <typename T> __global__ void calcDirections(const EEDI2Param d, const T
       }
 
       if (y > 1) {
-        const unsigned diff2pp = std::abs(src2p[x - 1] - srcpp[x - 1 - u]) + std::abs(src2p[x] - srcpp[x - u]) +
-                                 std::abs(src2p[x + 1] - srcpp[x + 1 - u]);
-        const unsigned diffp2p = std::abs(srcpp[x - 1] - src2p[x - 1 + u]) + std::abs(srcpp[x] - src2p[x + u]) +
-                                 std::abs(srcpp[x + 1] - src2p[x + 1 + u]);
+        const unsigned diff2pp =
+            abs(src2p[x - 1] - srcpp[x - 1 - u]) + abs(src2p[x] - srcpp[x - u]) + abs(src2p[x + 1] - srcpp[x + 1 - u]);
+        const unsigned diffp2p =
+            abs(srcpp[x - 1] - src2p[x - 1 + u]) + abs(srcpp[x] - src2p[x + u]) + abs(srcpp[x + 1] - src2p[x + 1 + u]);
         const unsigned diffA = diff + diff2pp + diffp2p;
         diffD += diffp2p;
         diffE += diff2pp;
@@ -638,10 +651,10 @@ template <typename T> __global__ void calcDirections(const EEDI2Param d, const T
       }
 
       if (y < height - 2) {
-        const unsigned diff2nn = std::abs(src2n[x - 1] - srcpn[x - 1 + u]) + std::abs(src2n[x] - srcpn[x + u]) +
-                                 std::abs(src2n[x + 1] - srcpn[x + 1 + u]);
-        const unsigned diffn2n = std::abs(srcpn[x - 1] - src2n[x - 1 - u]) + std::abs(srcpn[x] - src2n[x - u]) +
-                                 std::abs(srcpn[x + 1] - src2n[x + 1 - u]);
+        const unsigned diff2nn =
+            abs(src2n[x - 1] - srcpn[x - 1 + u]) + abs(src2n[x] - srcpn[x + u]) + abs(src2n[x + 1] - srcpn[x + 1 + u]);
+        const unsigned diffn2n =
+            abs(srcpn[x - 1] - src2n[x - 1 - u]) + abs(srcpn[x] - src2n[x - u]) + abs(srcpn[x + 1] - src2n[x + 1 - u]);
         const unsigned diffC = diff + diff2nn + diffn2n;
         diffD += diff2nn;
         diffE += diffn2n;
@@ -685,12 +698,12 @@ template <typename T> __global__ void calcDirections(const EEDI2Param d, const T
     bose_sort_array(order);
 
     const int mid = (k & 1) ? order[k / 2] : (order[(k - 1) / 2] + order[k / 2] + 1) / 2;
-    const int lim = std::max(limlut[std::abs(mid)] / 4, 2);
+    const int lim = mmax(limlut[abs(mid)] / 4, 2);
     int sum = 0;
     unsigned count = 0;
 
     for (unsigned i = 0; i < k; i++) {
-      if (std::abs(order[i] - mid) <= lim) {
+      if (abs(order[i] - mid) <= lim) {
         sum += order[i];
         count++;
       }
@@ -752,12 +765,12 @@ template <typename T> __global__ void filterDirMap(const EEDI2Param d, const T *
   bose_sort_array(order);
 
   const int mid = (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
-  const int lim = limlut[std::abs(mid - neutral) >> shift2] << shift;
+  const int lim = limlut[abs(mid - neutral) >> shift2] << shift;
   int sum = 0;
   unsigned count = 0;
 
   for (unsigned i = 0; i < u; i++) {
-    if (std::abs(order[i] - mid) <= lim) {
+    if (abs(order[i] - mid) <= lim) {
       sum += order[i];
       count++;
     }
@@ -817,12 +830,12 @@ template <typename T> __global__ void expandDirMap(const EEDI2Param d, const T *
   bose_sort_array(order);
 
   const int mid = (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
-  const int lim = limlut[std::abs(mid - neutral) >> shift2] << shift;
+  const int lim = limlut[abs(mid - neutral) >> shift2] << shift;
   int sum = 0;
   unsigned count = 0;
 
   for (unsigned i = 0; i < u; i++) {
-    if (std::abs(order[i] - mid) <= lim) {
+    if (abs(order[i] - mid) <= lim) {
       sum += order[i];
       count++;
     }
@@ -852,24 +865,24 @@ template <typename T> __global__ void filterMap(const EEDI2Param d, const T *msk
     return;
 
   int dir = (dmskp[x] - neutral) / 4;
-  const int lim = std::max(std::abs(dir) * 2, twleve + 0);
+  const int lim = mmax(abs(dir) * 2, twleve + 0);
   dir >>= shift;
   bool ict = false, icb = false;
 
   if (dir < 0) {
-    for (int j = std::max(-(int)x, dir); j <= 0; j++) {
-      if ((std::abs(dmskpp[x + j] - dmskp[x]) > lim && dmskpp[x + j] != peak) ||
+    for (int j = mmax(-(int)x, dir); j <= 0; j++) {
+      if ((abs(dmskpp[x + j] - dmskp[x]) > lim && dmskpp[x + j] != peak) ||
           (dmskp[x + j] == peak && dmskpp[x + j] == peak) ||
-          (std::abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
+          (abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
         ict = true;
         break;
       }
     }
   } else {
-    for (int j = 0; j <= std::min((int)width - (int)x - 1, dir); j++) {
-      if ((std::abs(dmskpp[x + j] - dmskp[x]) > lim && dmskpp[x + j] != peak) ||
+    for (int j = 0; j <= mmin((int)width - (int)x - 1, dir); j++) {
+      if ((abs(dmskpp[x + j] - dmskp[x]) > lim && dmskpp[x + j] != peak) ||
           (dmskp[x + j] == peak && dmskpp[x + j] == peak) ||
-          (std::abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
+          (abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
         ict = true;
         break;
       }
@@ -878,19 +891,19 @@ template <typename T> __global__ void filterMap(const EEDI2Param d, const T *msk
 
   if (ict) {
     if (dir < 0) {
-      for (int j = 0; j <= std::min((int)width - (int)x - 1, std::abs(dir)); j++) {
-        if ((std::abs(dmskpn[x + j] - dmskp[x]) > lim && dmskpn[x + j] != peak) ||
+      for (int j = 0; j <= mmin((int)width - (int)x - 1, abs(dir)); j++) {
+        if ((abs(dmskpn[x + j] - dmskp[x]) > lim && dmskpn[x + j] != peak) ||
             (dmskpn[x + j] == peak && dmskp[x + j] == peak) ||
-            (std::abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
+            (abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
           icb = true;
           break;
         }
       }
     } else {
-      for (int j = std::max(-(int)x, -dir); j <= 0; j++) {
-        if ((std::abs(dmskpn[x + j] - dmskp[x]) > lim && dmskpn[x + j] != peak) ||
+      for (int j = mmax(-(int)x, -dir); j <= 0; j++) {
+        if ((abs(dmskpn[x + j] - dmskp[x]) > lim && dmskpn[x + j] != peak) ||
             (dmskpn[x + j] == peak && dmskp[x + j] == peak) ||
-            (std::abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
+            (abs(dmskp[x + j] - dmskp[x]) > lim && dmskp[x + j] != peak)) {
           icb = true;
           break;
         }
@@ -941,22 +954,22 @@ template <typename T> __global__ void markDirections2X(const EEDI2Param d, const
     bose_sort_array(order);
 
     const int mid = (v & 1) ? order[v / 2] : (order[(v - 1) / 2] + order[v / 2] + 1) / 2;
-    const int lim = limlut[std::abs(mid - neutral) >> shift2] << shift;
+    const int lim = limlut[abs(mid - neutral) >> shift2] << shift;
     int sum = 0;
     unsigned count = 0;
 
     unsigned u = 0;
-    if (std::abs(dmskp[x - 1] - dmskpn[x - 1]) <= lim || dmskp[x - 1] == peak || dmskpn[x - 1] == peak)
+    if (abs(dmskp[x - 1] - dmskpn[x - 1]) <= lim || dmskp[x - 1] == peak || dmskpn[x - 1] == peak)
       u++;
-    if (std::abs(dmskp[x] - dmskpn[x]) <= lim || dmskp[x] == peak || dmskpn[x] == peak)
+    if (abs(dmskp[x] - dmskpn[x]) <= lim || dmskp[x] == peak || dmskpn[x] == peak)
       u++;
-    if (std::abs(dmskp[x + 1] - dmskpn[x - 1]) <= lim || dmskp[x + 1] == peak || dmskpn[x + 1] == peak)
+    if (abs(dmskp[x + 1] - dmskpn[x - 1]) <= lim || dmskp[x + 1] == peak || dmskpn[x + 1] == peak)
       u++;
     if (u < 2)
       return;
 
     for (unsigned i = 0; i < v; i++) {
-      if (std::abs(order[i] - mid) <= lim) {
+      if (abs(order[i] - mid) <= lim) {
         sum += order[i];
         count++;
       }
@@ -1025,12 +1038,12 @@ template <typename T> __global__ void filterDirMap2X(const EEDI2Param d, const T
   bose_sort_array(order);
 
   const int mid = (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
-  const int lim = limlut[std::abs(mid - neutral) >> shift2] << shift;
+  const int lim = limlut[abs(mid - neutral) >> shift2] << shift;
   int sum = 0;
   unsigned count = 0;
 
   for (unsigned i = 0; i < u; i++) {
-    if (std::abs(order[i] - mid) <= lim) {
+    if (abs(order[i] - mid) <= lim) {
       sum += order[i];
       count++;
     }
@@ -1096,12 +1109,12 @@ template <typename T> __global__ void expandDirMap2X(const EEDI2Param d, const T
   bose_sort_array(order);
 
   const int mid = (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
-  const int lim = limlut[std::abs(mid - neutral) >> shift2] << shift;
+  const int lim = limlut[abs(mid - neutral) >> shift2] << shift;
   int sum = 0;
   unsigned count = 0;
 
   for (unsigned i = 0; i < u; i++) {
-    if (std::abs(order[i] - mid) <= lim) {
+    if (abs(order[i] - mid) <= lim) {
       sum += order[i];
       count++;
     }
@@ -1192,10 +1205,10 @@ template <typename T> __global__ void fillGaps2X(const EEDI2Param d, const T *ms
   if (maxb == -twenty)
     maxb = minb = twenty;
 
-  const int thresh = std::max({std::max(std::abs(forward - neutral), std::abs(back - neutral)) / 4, eight + 0,
-                               std::abs(mint - maxt), std::abs(minb - maxb)});
-  const unsigned lim = std::min(std::max(std::abs(forward - neutral), std::abs(back - neutral)) >> shift2, 6);
-  if (std::abs(forward - back) <= thresh && (v - u - 1 <= lim || tc || bc)) {
+  const int thresh =
+      mmax(mmax(abs(forward - neutral), abs(back - neutral)) / 4, eight + 0, abs(mint - maxt), abs(minb - maxb));
+  const unsigned lim = mmin(mmax(abs(forward - neutral), abs(back - neutral)) >> shift2, 6);
+  if (abs(forward - back) <= thresh && (v - u - 1 <= lim || tc || bc)) {
     //    const float step = static_cast<float>(forward - back) / (v - u);
     //    for (unsigned j = 0; j < v - u - 1; j++)
     //      dstp[u + j + 1] = back + static_cast<int>(j * step + 0.5);
@@ -1258,9 +1271,9 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param d, con
   bounds_check3(y, 1, height - 1);
 
   int dir = dmskp[x];
-  const int lim = limlut[std::abs(dir - neutral) >> shift2] << shift;
+  const int lim = limlut[abs(dir - neutral) >> shift2] << shift;
 
-  if (dir == peak || (std::abs(dmskp[x] - dmskp[x - 1]) > lim && std::abs(dmskp[x] - dmskp[x + 1]) > lim)) {
+  if (dir == peak || (abs(dmskp[x] - dmskp[x - 1]) > lim && abs(dmskp[x] - dmskp[x + 1]) > lim)) {
     dstpn[x] = (dstp[x] + dstpnn[x] + 1) / 2;
     if (dir != peak)
       dmskp[x] = neutral;
@@ -1281,47 +1294,45 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param d, con
   }
 
   if (x > 1 && x < width - 2 &&
-      ((dstp[x] < std::max(dstp[x - 2], dstp[x - 1]) - three && dstp[x] < std::max(dstp[x + 2], dstp[x + 1]) - three &&
-        dstpnn[x] < std::max(dstpnn[x - 2], dstpnn[x - 1]) - three &&
-        dstpnn[x] < std::max(dstpnn[x + 2], dstpnn[x + 1]) - three) ||
-       (dstp[x] > std::min(dstp[x - 2], dstp[x - 1]) + three && dstp[x] > std::min(dstp[x + 2], dstp[x + 1]) + three &&
-        dstpnn[x] > std::min(dstpnn[x - 2], dstpnn[x - 1]) + three &&
-        dstpnn[x] > std::min(dstpnn[x + 2], dstpnn[x + 1]) + three))) {
+      ((dstp[x] < mmax(dstp[x - 2], dstp[x - 1]) - three && dstp[x] < mmax(dstp[x + 2], dstp[x + 1]) - three &&
+        dstpnn[x] < mmax(dstpnn[x - 2], dstpnn[x - 1]) - three &&
+        dstpnn[x] < mmax(dstpnn[x + 2], dstpnn[x + 1]) - three) ||
+       (dstp[x] > mmin(dstp[x - 2], dstp[x - 1]) + three && dstp[x] > mmin(dstp[x + 2], dstp[x + 1]) + three &&
+        dstpnn[x] > mmin(dstpnn[x - 2], dstpnn[x - 1]) + three &&
+        dstpnn[x] > mmin(dstpnn[x + 2], dstpnn[x + 1]) + three))) {
     dstpn[x] = (dstp[x] + dstpnn[x] + 1) / 2;
     dmskp[x] = neutral;
     return;
   }
 
   dir = (dir - neutral + (1 << (shift2 - 1))) >> shift2;
-  const int uStart =
-      (dir - 2 < 0) ? std::max({-x + 1, dir - 2, -width + 2 + x}) : std::min({x - 1, dir - 2, width - 2 - x});
-  const int uStop =
-      (dir + 2 < 0) ? std::max({-x + 1, dir + 2, -width + 2 + x}) : std::min({x - 1, dir + 2, width - 2 - x});
+  const int uStart = (dir - 2 < 0) ? mmax(-x + 1, dir - 2, -width + 2 + x) : mmin(x - 1, dir - 2, width - 2 - x);
+  const int uStop = (dir + 2 < 0) ? mmax(-x + 1, dir + 2, -width + 2 + x) : mmin(x - 1, dir + 2, width - 2 - x);
   unsigned min = d.nt8;
   unsigned val = (dstp[x] + dstpnn[x] + 1) / 2;
 
   for (int u = uStart; u <= uStop; u++) {
-    const unsigned diff = std::abs(dstp[x - 1] - dstpnn[x - u - 1]) + std::abs(dstp[x] - dstpnn[x - u]) +
-                          std::abs(dstp[x + 1] - dstpnn[x - u + 1]) + std::abs(dstpnn[x - 1] - dstp[x + u - 1]) +
-                          std::abs(dstpnn[x] - dstp[x + u]) + std::abs(dstpnn[x + 1] - dstp[x + u + 1]);
+    const unsigned diff = abs(dstp[x - 1] - dstpnn[x - u - 1]) + abs(dstp[x] - dstpnn[x - u]) +
+                          abs(dstp[x + 1] - dstpnn[x - u + 1]) + abs(dstpnn[x - 1] - dstp[x + u - 1]) +
+                          abs(dstpnn[x] - dstp[x + u]) + abs(dstpnn[x + 1] - dstp[x + u + 1]);
     if (diff < min &&
-        ((omskp[x - 1 + u] != peak && std::abs(omskp[x - 1 + u] - dmskp[x]) <= lim) ||
-         (omskp[x + u] != peak && std::abs(omskp[x + u] - dmskp[x]) <= lim) ||
-         (omskp[x + 1 + u] != peak && std::abs(omskp[x + 1 + u] - dmskp[x]) <= lim)) &&
-        ((omskn[x - 1 - u] != peak && std::abs(omskn[x - 1 - u] - dmskp[x]) <= lim) ||
-         (omskn[x - u] != peak && std::abs(omskn[x - u] - dmskp[x]) <= lim) ||
-         (omskn[x + 1 - u] != peak && std::abs(omskn[x + 1 - u] - dmskp[x]) <= lim))) {
-      const unsigned diff2 = std::abs(dstp[x + u / 2 - 1] - dstpnn[x - u / 2 - 1]) +
-                             std::abs(dstp[x + u / 2] - dstpnn[x - u / 2]) +
-                             std::abs(dstp[x + u / 2 + 1] - dstpnn[x - u / 2 + 1]);
-      if (diff2 < d.nt4 && (((std::abs(omskp[x + u / 2] - omskn[x - u / 2]) <= lim ||
-                              std::abs(omskp[x + u / 2] - omskn[x - ((u + 1) / 2)]) <= lim) &&
+        ((omskp[x - 1 + u] != peak && abs(omskp[x - 1 + u] - dmskp[x]) <= lim) ||
+         (omskp[x + u] != peak && abs(omskp[x + u] - dmskp[x]) <= lim) ||
+         (omskp[x + 1 + u] != peak && abs(omskp[x + 1 + u] - dmskp[x]) <= lim)) &&
+        ((omskn[x - 1 - u] != peak && abs(omskn[x - 1 - u] - dmskp[x]) <= lim) ||
+         (omskn[x - u] != peak && abs(omskn[x - u] - dmskp[x]) <= lim) ||
+         (omskn[x + 1 - u] != peak && abs(omskn[x + 1 - u] - dmskp[x]) <= lim))) {
+      const unsigned diff2 = abs(dstp[x + u / 2 - 1] - dstpnn[x - u / 2 - 1]) +
+                             abs(dstp[x + u / 2] - dstpnn[x - u / 2]) +
+                             abs(dstp[x + u / 2 + 1] - dstpnn[x - u / 2 + 1]);
+      if (diff2 < d.nt4 && (((abs(omskp[x + u / 2] - omskn[x - u / 2]) <= lim ||
+                              abs(omskp[x + u / 2] - omskn[x - ((u + 1) / 2)]) <= lim) &&
                              omskp[x + u / 2] != peak) ||
-                            ((std::abs(omskp[x + ((u + 1) / 2)] - omskn[x - u / 2]) <= lim ||
-                              std::abs(omskp[x + ((u + 1) / 2)] - omskn[x - ((u + 1) / 2)]) <= lim) &&
+                            ((abs(omskp[x + ((u + 1) / 2)] - omskn[x - u / 2]) <= lim ||
+                              abs(omskp[x + ((u + 1) / 2)] - omskn[x - ((u + 1) / 2)]) <= lim) &&
                              omskp[x + ((u + 1) / 2)] != peak))) {
-        if ((std::abs(dmskp[x] - omskp[x + u / 2]) <= lim || std::abs(dmskp[x] - omskp[x + ((u + 1) / 2)]) <= lim) &&
-            (std::abs(dmskp[x] - omskn[x - u / 2]) <= lim || std::abs(dmskp[x] - omskn[x - ((u + 1) / 2)]) <= lim)) {
+        if ((abs(dmskp[x] - omskp[x + u / 2]) <= lim || abs(dmskp[x] - omskp[x + ((u + 1) / 2)]) <= lim) &&
+            (abs(dmskp[x] - omskn[x - u / 2]) <= lim || abs(dmskp[x] - omskn[x - ((u + 1) / 2)]) <= lim)) {
           val = (dstp[x + u / 2] + dstp[x + ((u + 1) / 2)] + dstpnn[x - u / 2] + dstpnn[x - ((u + 1) / 2)] + 2) / 4;
           min = diff;
           dir = u;
@@ -1335,19 +1346,18 @@ template <typename T> __global__ void interpolateLattice(const EEDI2Param d, con
     dmskp[x] = neutral + (dir << shift2);
   } else {
     const int dt = 4 >> d.subSampling;
-    const int uStart2 = std::max(-x + 1, -dt);
-    const int uStop2 = std::min(width - 2 - x, dt);
-    const unsigned minm = std::min(dstp[x], dstpnn[x]);
-    const unsigned maxm = std::max(dstp[x], dstpnn[x]);
+    const int uStart2 = mmax(-x + 1, -dt);
+    const int uStop2 = mmin(width - 2 - x, dt);
+    const unsigned minm = mmin(dstp[x], dstpnn[x]);
+    const unsigned maxm = mmax(dstp[x], dstpnn[x]);
     min = d.nt7;
 
     for (int u = uStart2; u <= uStop2; u++) {
       const int p1 = dstp[x + u / 2] + dstp[x + ((u + 1) / 2)];
       const int p2 = dstpnn[x - u / 2] + dstpnn[x - ((u + 1) / 2)];
-      const unsigned diff = std::abs(dstp[x - 1] - dstpnn[x - u - 1]) + std::abs(dstp[x] - dstpnn[x - u]) +
-                            std::abs(dstp[x + 1] - dstpnn[x - u + 1]) + std::abs(dstpnn[x - 1] - dstp[x + u - 1]) +
-                            std::abs(dstpnn[x] - dstp[x + u]) + std::abs(dstpnn[x + 1] - dstp[x + u + 1]) +
-                            std::abs(p1 - p2);
+      const unsigned diff = abs(dstp[x - 1] - dstpnn[x - u - 1]) + abs(dstp[x] - dstpnn[x - u]) +
+                            abs(dstp[x + 1] - dstpnn[x - u + 1]) + abs(dstpnn[x - 1] - dstp[x + u - 1]) +
+                            abs(dstpnn[x] - dstp[x + u]) + abs(dstpnn[x + 1] - dstp[x + u + 1]) + abs(p1 - p2);
       if (diff < min) {
         const unsigned valt = (p1 + p2 + 2) / 4;
         if (valt >= minm && valt <= maxm) {
@@ -1375,8 +1385,8 @@ template <typename T> __global__ void postProcess(const EEDI2Param d, const T *n
   bounds_check3(x, 0, width);
   bounds_check3(y, 1, height - 1);
 
-  const int lim = limlut[std::abs(nmskp[x] - neutral) >> shift2] << shift;
-  if (std::abs(nmskp[x] - omskp[x]) > lim && omskp[x] != peak && omskp[x] != neutral)
+  const int lim = limlut[abs(nmskp[x] - neutral) >> shift2] << shift;
+  if (abs(nmskp[x] - omskp[x]) > lim && omskp[x] != peak && omskp[x] != neutral)
     out = (dstpp[x] + dstpn[x] + 1) / 2;
 }
 
