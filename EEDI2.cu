@@ -212,7 +212,7 @@ public:
       d_pitch >>= d.subSampling;
       d.d_pitch = d_pitch;
 
-      try_cuda(cudaMemcpy2DAsync(h_src, d_pitch, s_src, s_pitch, width_bytes, height, cudaMemcpyHostToHost, stream));
+      try_cuda(cudaMemcpy2D(h_src, d_pitch, s_src, s_pitch, width_bytes, height, cudaMemcpyHostToHost));
       try_cuda(cudaMemcpy2DAsync(d_src, d_pitch, h_src, d_pitch, width_bytes, height, cudaMemcpyHostToDevice, stream));
 
       dim3 blocks = dim3(64, 1);
@@ -284,8 +284,8 @@ public:
         dst_height = height;
       }
       try_cuda(cudaMemcpy2DAsync(h_dst, d_pitch, d_dst, d_pitch, width_bytes, dst_height, cudaMemcpyDeviceToHost, stream));
-      try_cuda(cudaMemcpy2DAsync(s_dst, s_pitch, h_dst, d_pitch, width_bytes, dst_height, cudaMemcpyHostToHost, stream));
       try_cuda(cudaStreamSynchronize(stream));
+      try_cuda(cudaMemcpy2D(s_dst, s_pitch, h_dst, d_pitch, width_bytes, dst_height, cudaMemcpyHostToHost));
     }
 
     return dst_frame.release();
