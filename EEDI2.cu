@@ -2,12 +2,9 @@
 #include <limits>
 #include <memory>
 #include <stdexcept>
-#include <string>
 #include <tuple>
 #include <type_traits>
 #include <utility>
-
-#include <stdint.h>
 
 #include <boost/numeric/conversion/cast.hpp>
 #include <boost/sync/semaphore.hpp>
@@ -33,13 +30,13 @@ class CUDAError : public std::runtime_error {
 template <typename Td, typename Ts> void numeric_cast_to(Td &dst, Ts src) { dst = boost::numeric_cast<Td>(src); }
 
 struct EEDI2Param {
-  uint32_t d_pitch;
-  uint32_t nt4, nt7, nt8, nt13, nt19;
-  uint16_t mthresh, lthresh, vthresh;
-  uint16_t width, height;
-  uint8_t field;
-  uint8_t estr, dstr, maxd;
-  uint8_t subSampling;
+  unsigned d_pitch;
+  unsigned nt4, nt7, nt8, nt13, nt19;
+  unsigned mthresh, lthresh, vthresh;
+  unsigned field;
+  unsigned estr, dstr;
+  unsigned maxd, subSampling;
+  int width, height;
 };
 
 template <typename T> class EEDI2Instance {
@@ -54,8 +51,8 @@ template <typename T> class EEDI2Instance {
 
   T *h_src, *h_dst;
 
-  uint8_t map, pp, field, fieldS;
-  uint32_t d_pitch;
+  unsigned map, pp, field, fieldS;
+  unsigned d_pitch;
 
 public:
   EEDI2Instance(const VSMap *in, const VSAPI *vsapi) : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
@@ -360,14 +357,14 @@ public:
 #define KERNEL __global__ __launch_bounds__(64)
 
 #define setup_kernel                                                                                                                       \
-  uint16_t width = d.width, height = d.height, x = threadIdx.x + blockIdx.x * blockDim.x, y = threadIdx.y + blockIdx.y * blockDim.y;       \
+  int width = d.width, height = d.height, x = threadIdx.x + blockIdx.x * blockDim.x, y = threadIdx.y + blockIdx.y * blockDim.y;            \
   constexpr T shift = sizeof(T) * 8 - 8, peak = std::numeric_limits<T>::max(), ten = 10 << shift, twleve = 12 << shift,                    \
               eight = 8 << shift, twenty = 20 << shift, three = 3 << shift, nine = 9 << shift;                                             \
   constexpr T shift2 = shift + 2, neutral = peak / 2;                                                                                      \
   constexpr int intmax = std::numeric_limits<int>::max()
 
-__device__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12, 12, 12, 12,
-                             12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};
+__device__ int limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12, 12, 12, 12,
+                          12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, -1, -1};
 
 #define setup_kernel2x                                                                                                                     \
   setup_kernel;                                                                                                                            \
@@ -375,7 +372,7 @@ __device__ int8_t limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11,
   y = d.field ? 2 * y + 1 : 2 * y
 
 #define bounds_check3(value, lower, upper)                                                                                                 \
-  if ((value) < (lower) || (value) >= (upper))                                                                                             \
+  if (static_cast<unsigned>(value) < (lower) || static_cast<unsigned>(value) >= (upper))                                                   \
   return
 
 #define stride (d.d_pitch / sizeof(T))
