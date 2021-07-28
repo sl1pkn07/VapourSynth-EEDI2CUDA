@@ -1,0 +1,68 @@
+name: Build
+
+on: [push, workflow_dispatch]
+
+jobs:
+  fetch-boost:
+    runs-on: ubuntu-20.04
+    steps:
+    - name: Checkout Boost
+      uses: actions/checkout@v2
+      with:
+        repository: boostorg/boost
+        ref: dcea40897111fb7c4b92b17455e177d6d2bf735c
+        submodules: recursive
+    - name: Build Boost
+      run: |
+        ./bootstrap.sh
+        ./b2 headers
+    - name: Archive
+      run: zip -r0 boost.zip boost
+    - name: Upload
+      uses: actions/upload-artifact@v2
+      with:
+        name: dep-boost
+        path: boost.zip
+  build-windows:
+    runs-on: windows-2019
+    defaults:
+      run:
+        shell: cmd
+    needs: fetch-boost
+    steps:
+    - name: Checkout repo
+      uses: actions/checkout@v2
+    - name: Download Boost
+      uses: actions/download-artifact@v2
+      with:
+        name: dep-boost
+    - name: Expand Boost
+      run:  Expand-Archive Boost.zip -DestinationPath .
+      shell: pwsh
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        toolset: 14.25
+    - name: Install Ninja
+      run: choco install ninja
+    - name: Setup CUDA
+      uses: Jimver/cuda-toolkit@v0.2.4
+      with:
+        cuda: 11.2.2
+    - name: Configure
+      run: |
+        mkdir build
+        cmake -S. -Bbuild -GNinja -DBoost_INCLUDE_DIRS=%cd% -DCMAKE_BUILD_TYPE=Release
+    - name: Build
+      run: ninja
+      working-directory: build
+    - name: Upload
+      uses: actions/upload-artifact@v2
+      with:
+        name: EEDI2CUDA
+        path: build/EEDI2CUDA.dll
+    - name: Release
+      uses: softprops/action-gh-release@v1
+      if: startsWith(github.ref, 'refs/tags/')
+      with:
+        files: build/EEDI2CUDA.dll
