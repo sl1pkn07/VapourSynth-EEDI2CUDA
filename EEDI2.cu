@@ -47,7 +47,7 @@ template <typename T> class EEDI2Instance {
   EEDI2Param d;
   cudaStream_t stream;
 
-  T *dst, *msk, *tmp, *src;
+  T *dst, *msk, *src, *tmp;
   T *dst2, *dst2M, *tmp2, *tmp2_2, *tmp2_3, *msk2;
 
   T *h_src, *h_dst;
@@ -573,6 +573,30 @@ template <typename T> KERNEL void calcDirections(const EEDI2Param d, const T *sr
 
   out = peak;
 
+  constexpr int block_w = 64;
+  constexpr int off_w = block_w / 2;
+  constexpr int buf_w = block_w * 2;
+  __shared__ int s2p[buf_w], s1p[buf_w], s[buf_w], s1n[buf_w], s2n[buf_w];
+  __shared__ int m1p[buf_w], m1n[buf_w];
+
+  // XXX: we are safe because they won't be the first or last plane in pool
+  s2p[x % block_w] = src2p[x - off_w];
+  s2p[x % block_w + block_w] = src2p[x + off_w];
+  s1p[x % block_w] = srcpp[x - off_w];
+  s1p[x % block_w + block_w] = srcpp[x + off_w];
+  s[x % block_w] = srcp[x - off_w];
+  s[x % block_w + block_w] = srcp[x + off_w];
+  s1n[x % block_w] = srcpn[x - off_w];
+  s1n[x % block_w + block_w] = srcpn[x + off_w];
+  s2n[x % block_w] = src2n[x - off_w];
+  s2n[x % block_w + block_w] = src2n[x + off_w];
+  m1p[x % block_w] = mskpp[x - off_w];
+  m1p[x % block_w + block_w] = mskpp[x + off_w];
+  m1n[x % block_w] = mskpn[x - off_w];
+  m1n[x % block_w + block_w] = mskpn[x + off_w];
+  __syncthreads();
+  auto X = x % block_w + off_w;
+
   bounds_check3(x, 1, width - 1);
   bounds_check3(y, 1, height - 1);
 
@@ -583,7 +607,7 @@ template <typename T> KERNEL void calcDirections(const EEDI2Param d, const T *sr
 
   const int uStart = mmax(-x + 1, -maxd);
   const int uStop = mmin(width - 2 - x, maxd);
-  const unsigned min0 = abs(srcp[x] - srcpn[x]) + abs(srcp[x] - srcpp[x]);
+  const unsigned min0 = abs(s[X] - s1n[X]) + abs(s[X] - s1p[X]);
   unsigned minA = mmin(d.nt19, min0 * 9);
   unsigned minB = mmin(d.nt13, min0 * 6);
   unsigned minC = minA;
@@ -592,12 +616,12 @@ template <typename T> KERNEL void calcDirections(const EEDI2Param d, const T *sr
   int dirA = -5000, dirB = -5000, dirC = -5000, dirD = -5000, dirE = -5000;
 
   for (int u = uStart; u <= uStop; u++) {
-    if ((y == 1 || mskpp[x - 1 + u] == peak || mskpp[x + u] == peak || mskpp[x + 1 + u] == peak) &&
-        (y == height - 2 || mskpn[x - 1 - u] == peak || mskpn[x - u] == peak || mskpn[x + 1 - u] == peak)) {
-      const unsigned diffsn = abs(srcp[x - 1] - srcpn[x - 1 - u]) + abs(srcp[x] - srcpn[x - u]) + abs(srcp[x + 1] - srcpn[x + 1 - u]);
-      const unsigned diffsp = abs(srcp[x - 1] - srcpp[x - 1 + u]) + abs(srcp[x] - srcpp[x + u]) + abs(srcp[x + 1] - srcpp[x + 1 + u]);
-      const unsigned diffps = abs(srcpp[x - 1] - srcp[x - 1 - u]) + abs(srcpp[x] - srcp[x - u]) + abs(srcpp[x + 1] - srcp[x + 1 - u]);
-      const unsigned diffns = abs(srcpn[x - 1] - srcp[x - 1 + u]) + abs(srcpn[x] - srcp[x + u]) + abs(srcpn[x + 1] - srcp[x + 1 + u]);
+    if ((y == 1 || m1p[X - 1 + u] == peak || m1p[X + u] == peak || m1p[X + 1 + u] == peak) &&
+        (y == height - 2 || m1n[X - 1 - u] == peak || m1n[X - u] == peak || m1n[X + 1 - u] == peak)) {
+      const unsigned diffsn = abs(s[X - 1] - s1n[X - 1 - u]) + abs(s[X] - s1n[X - u]) + abs(s[X + 1] - s1n[X + 1 - u]);
+      const unsigned diffsp = abs(s[X - 1] - s1p[X - 1 + u]) + abs(s[X] - s1p[X + u]) + abs(s[X + 1] - s1p[X + 1 + u]);
+      const unsigned diffps = abs(s1p[X - 1] - s[X - 1 - u]) + abs(s1p[X] - s[X - u]) + abs(s1p[X + 1] - s[X + 1 - u]);
+      const unsigned diffns = abs(s1n[X - 1] - s[X - 1 + u]) + abs(s1n[X] - s[X + u]) + abs(s1n[X + 1] - s[X + 1 + u]);
       const unsigned diff = diffsn + diffsp + diffps + diffns;
       unsigned diffD = diffsp + diffns;
       unsigned diffE = diffsn + diffps;
@@ -608,8 +632,8 @@ template <typename T> KERNEL void calcDirections(const EEDI2Param d, const T *sr
       }
 
       if (y > 1) {
-        const unsigned diff2pp = abs(src2p[x - 1] - srcpp[x - 1 - u]) + abs(src2p[x] - srcpp[x - u]) + abs(src2p[x + 1] - srcpp[x + 1 - u]);
-        const unsigned diffp2p = abs(srcpp[x - 1] - src2p[x - 1 + u]) + abs(srcpp[x] - src2p[x + u]) + abs(srcpp[x + 1] - src2p[x + 1 + u]);
+        const unsigned diff2pp = abs(s2p[X - 1] - s1p[X - 1 - u]) + abs(s2p[X] - s1p[X - u]) + abs(s2p[X + 1] - s1p[X + 1 - u]);
+        const unsigned diffp2p = abs(s1p[X - 1] - s2p[X - 1 + u]) + abs(s1p[X] - s2p[X + u]) + abs(s1p[X + 1] - s2p[X + 1 + u]);
         const unsigned diffA = diff + diff2pp + diffp2p;
         diffD += diffp2p;
         diffE += diff2pp;
@@ -621,8 +645,8 @@ template <typename T> KERNEL void calcDirections(const EEDI2Param d, const T *sr
       }
 
       if (y < height - 2) {
-        const unsigned diff2nn = abs(src2n[x - 1] - srcpn[x - 1 + u]) + abs(src2n[x] - srcpn[x + u]) + abs(src2n[x + 1] - srcpn[x + 1 + u]);
-        const unsigned diffn2n = abs(srcpn[x - 1] - src2n[x - 1 - u]) + abs(srcpn[x] - src2n[x - u]) + abs(srcpn[x + 1] - src2n[x + 1 - u]);
+        const unsigned diff2nn = abs(s2n[X - 1] - s1n[X - 1 + u]) + abs(s2n[X] - s1n[X + u]) + abs(s2n[X + 1] - s1n[X + 1 + u]);
+        const unsigned diffn2n = abs(s1n[X - 1] - s2n[X - 1 - u]) + abs(s1n[X] - s2n[X - u]) + abs(s1n[X + 1] - s2n[X + 1 - u]);
         const unsigned diffC = diff + diff2nn + diffn2n;
         diffD += diff2nn;
         diffE += diffn2n;
