@@ -10,7 +10,7 @@ FetchContent_MakeAvailable(VapourSynth)
 set(CMAKE_CUDA_STANDARD 17 REQUIRED)
 set(CMAKE_CUDA_VISIBILITY_PRESET hidden)
 add_library(EEDI2CUDA SHARED
-    "EEDI2.cu")
+    EEDI2.cu)
 target_include_directories(EEDI2CUDA PRIVATE
     "${vapoursynth_SOURCE_DIR}/include"
     ${Boost_INCLUDE_DIRS}
@@ -18,16 +18,12 @@ target_include_directories(EEDI2CUDA PRIVATE
 target_compile_options(EEDI2CUDA PRIVATE
     --ptxas-options=-v
     --restrict
-    --ftz=true
-    --fmad=true
+    --use_fast_math
     --Wdefault-stream-launch
     --Wno-deprecated-gpu-targets
     --expt-relaxed-constexpr
+    --no-host-device-initializer-list
     --display-error-number
-    -diag-suppress 69,177,186,830)
-if(MSVC)
-    target_compile_options(EEDI2CUDA PRIVATE "-Xcompiler=/W4 /wd4100 /wd4297 /wd4458 /wd4291")
-else()
-    target_compile_options(EEDI2CUDA PRIVATE "-Xcompiler=-Wall -Wno-terminate")
-endif()
+    --diag-suppress 177,186
+    "$<$<BOOL:${MSVC}>:-Xcompiler=/W4 /wd4100 /wd4297 /wd4458>")
 set_target_properties(EEDI2CUDA PROPERTIES CUDA_ARCHITECTURES "50-virtual")
