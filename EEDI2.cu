@@ -142,7 +142,11 @@ private:
 
   void initCuda() {
     // create stream
-    try_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    try {
+      try_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    } catch (const CUDAError &exc) {
+      throw CUDAError(exc.what() + " Please upgrade your driver."s);
+    }
 
     // alloc mem
     constexpr size_t numMem = 4;
