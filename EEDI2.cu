@@ -28,6 +28,7 @@ class CUDAError : public std::runtime_error {
 [[noreturn]] void unreachable() { assert(false); }
 
 template <typename Td, typename Ts> void numeric_cast_to(Td &dst, Ts src) { dst = boost::numeric_cast<Td>(src); }
+template <typename Td, typename Ts> void narrow_cast_to(Td &dst, Ts src) { dst = static_cast<Td>(src); }
 
 struct EEDI2Param {
   unsigned d_pitch;
@@ -106,7 +107,8 @@ private:
     numeric_cast_to(map, propGetIntDefault("map", 0));
     numeric_cast_to(pp, propGetIntDefault("pp", 1));
 
-    auto nt = static_cast<uint32_t>(boost::numeric_cast<uint8_t>(propGetIntDefault("nt", 50)));
+    unsigned nt;
+    numeric_cast_to(nt, propGetIntDefault("nt", 50));
 
     if (field > 3)
       throw invalid_arg("field must be 0, 1, 2 or 3");
@@ -153,7 +155,7 @@ private:
     auto width = vi->width;
     auto height = vi->height;
     try_cuda(cudaMallocPitch(&mem[0], &pitch, width * sizeof(T), height * numMem));
-    d_pitch = static_cast<uint32_t>(pitch);
+    narrow_cast_to(d_pitch, pitch);
     for (size_t i = 1; i < numMem; ++i)
       mem[i] = reinterpret_cast<T *>(reinterpret_cast<char *>(mem[i - 1]) + d_pitch * height);
 
@@ -202,10 +204,10 @@ public:
       auto d_pitch = this->d_pitch;
       int dst_height;
 
-      d.field = static_cast<uint8_t>(field);
-      d.width = static_cast<uint16_t>(width);
-      d.height = static_cast<uint16_t>(height);
-      d.subSampling = static_cast<uint8_t>(plane ? vi->format->subSamplingW : 0);
+      d.field = field;
+      d.width = width;
+      d.height = height;
+      d.subSampling = plane ? vi->format->subSamplingW : 0u;
       d_pitch >>= d.subSampling;
       d.d_pitch = d_pitch;
 
@@ -1256,7 +1258,8 @@ template <typename T> void VS_CC eedi2Free(void *instanceData, VSCore *_core, co
 template <typename T> void eedi2CreateInner(const VSMap *in, VSMap *out, const VSAPI *vsapi, VSCore *core) {
   try {
     int err;
-    auto num_streams = boost::numeric_cast<unsigned>(vsapi->propGetInt(in, "num_streams", 0, &err));
+    unsigned num_streams;
+    numeric_cast_to(num_streams, vsapi->propGetInt(in, "num_streams", 0, &err));
     if (err)
       num_streams = 1;
     auto data = new (num_streams) EEDI2Data<T>(in, vsapi);
