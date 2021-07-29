@@ -59,6 +59,7 @@ public:
   EEDI2Instance(const VSMap *in, const VSAPI *vsapi) : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
     initParams(in, vsapi);
     initCuda();
+    tuneKernels();
   }
 
   EEDI2Instance(const EEDI2Instance &other, const VSAPI *vsapi)
@@ -171,6 +172,8 @@ private:
     try_cuda(cudaHostAlloc(&h_src, d_pitch * height, cudaHostAllocWriteCombined));
     try_cuda(cudaHostAlloc(&h_dst, d_pitch * height * (map == 0 || map == 3 ? 2 : 1), cudaHostAllocDefault));
   }
+
+  void tuneKernels();
 
 public:
   const VSVideoInfo *getOutputVI() const { return vi2.get(); }
@@ -1245,6 +1248,27 @@ template <typename T> KERNEL void postProcess(const EEDI2Param d, const T *nmsk,
   const int lim = limlut[abs(nmskp[x] - neutral) >> shift2] << shift;
   if (abs(nmskp[x] - omskp[x]) > lim && omskp[x] != peak && omskp[x] != neutral)
     out = (dstpp[x] + dstpn[x] + 1) / 2;
+}
+
+template <typename T> void EEDI2Instance<T>::tuneKernels() {
+  int totalSmem;
+  try_cuda(cudaDeviceGetAttribute(&totalSmem, cudaDevAttrMaxSharedMemoryPerMultiprocessor, 0));
+  auto carveout65536 = 65536 * 100 / totalSmem;
+  try_cuda(cudaFuncSetAttribute(buildEdgeMask<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
+  try_cuda(cudaFuncSetAttribute(erode<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
+  try_cuda(cudaFuncSetAttribute(dilate<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
+  try_cuda(cudaFuncSetAttribute(removeSmallHorzGaps<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
+  try_cuda(cudaFuncSetAttribute(calcDirections<T>, cudaFuncAttributePreferredSharedMemoryCarveout, carveout65536));
+  try_cuda(cudaFuncSetAttribute(filterDirMap<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
+  try_cuda(cudaFuncSetAttribute(expandDirMap<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
+  try_cuda(cudaFuncSetAttribute(filterMap<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
+  try_cuda(cudaFuncSetAttribute(markDirections2X<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
+  try_cuda(cudaFuncSetAttribute(filterDirMap2X<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
+  try_cuda(cudaFuncSetAttribute(expandDirMap2X<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
+  try_cuda(cudaFuncSetAttribute(fillGaps2X<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
+  try_cuda(cudaFuncSetAttribute(fillGaps2XStep2<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
+  try_cuda(cudaFuncSetAttribute(interpolateLattice<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
+  try_cuda(cudaFuncSetAttribute(postProcess<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
 }
 
 template <typename T> void VS_CC eedi2Init(VSMap *_in, VSMap *_out, void **instanceData, VSNode *node, VSCore *_core, const VSAPI *vsapi) {
