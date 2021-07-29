@@ -363,6 +363,10 @@ public:
 
 #define setup_kernel                                                                                                                       \
   int width = d.width, height = d.height, x = threadIdx.x + blockIdx.x * blockDim.x, y = threadIdx.y + blockIdx.y * blockDim.y;            \
+  __assume(width > 0);                                                                                                                     \
+  __assume(height > 0);                                                                                                                    \
+  __assume(x >= 0);                                                                                                                        \
+  __assume(y >= 0);                                                                                                                        \
   constexpr T shift = sizeof(T) * 8 - 8, peak = std::numeric_limits<T>::max(), ten = 10 << shift, twleve = 12 << shift,                    \
               eight = 8 << shift, twenty = 20 << shift, three = 3 << shift, nine = 9 << shift;                                             \
   constexpr T shift2 = shift + 2, neutral = peak / 2;                                                                                      \
@@ -377,7 +381,7 @@ __device__ int limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12
   y = d.field ? 2 * y + 1 : 2 * y
 
 #define bounds_check3(value, lower, upper)                                                                                                 \
-  if (static_cast<unsigned>(value) < (lower) || static_cast<unsigned>(value) >= (upper))                                                   \
+  if ((value) < (lower) || (value) >= (upper))                                                                                             \
   return
 
 #define stride (d.d_pitch / sizeof(T))
