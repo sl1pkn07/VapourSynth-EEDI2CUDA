@@ -608,8 +608,8 @@ template <typename T> KERNEL void calcDirections(const EEDI2Param d, const T *sr
   if (mskp[x] != peak || (mskp[x - 1] != peak && mskp[x + 1] != peak))
     return;
 
-  const int uStart = mmax(-x + 1, -maxd);
-  const int uStop = mmin(width - 2 - x, maxd);
+  const int uStartBound = -x + 1;
+  const int uStopBound = width - 2 - x;
   const unsigned min0 = abs(s[X] - s1n[X]) + abs(s[X] - s1p[X]);
   unsigned minA = mmin(d.nt19, min0 * 9);
   unsigned minB = mmin(d.nt13, min0 * 6);
@@ -618,7 +618,9 @@ template <typename T> KERNEL void calcDirections(const EEDI2Param d, const T *sr
   unsigned minE = minB;
   int dirA = -5000, dirB = -5000, dirC = -5000, dirD = -5000, dirE = -5000;
 
-  for (int u = uStart; u <= uStop; u++) {
+  for (int u = -maxd; u <= maxd; u++) {
+    if (u < uStartBound || u > uStopBound)
+      continue;
     if ((y == 1 || m1p[X - 1 + u] == peak || m1p[X + u] == peak || m1p[X + 1 + u] == peak) &&
         (y == height - 2 || m1n[X - 1 - u] == peak || m1n[X - u] == peak || m1n[X + 1 - u] == peak)) {
       const unsigned diffsn = abs(s[X - 1] - s1n[X - 1 - u]) + abs(s[X] - s1n[X - u]) + abs(s[X + 1] - s1n[X + 1 - u]);
