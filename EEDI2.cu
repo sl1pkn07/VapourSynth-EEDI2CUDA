@@ -379,7 +379,7 @@ __device__ int limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12
 
 #define stride (d.d_pitch / sizeof(T))
 #define line(p) ((p) + stride * y)
-#define lineOff(p, off) ((p) + stride * (y + (off)))
+#define lineOff(p, off) ((p) + int(stride) * (y + (off)))
 #define point(p) ((p)[stride * y + x])
 
 namespace bose {
