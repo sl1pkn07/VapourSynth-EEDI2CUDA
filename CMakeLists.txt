@@ -25,5 +25,5 @@ target_compile_options(EEDI2CUDA PRIVATE
     --no-host-device-initializer-list
     --display-error-number
     --diag-suppress 177,186
-    "$<$<BOOL:${MSVC}>:-Xcompiler=/W4 /wd4100 /wd4297 /wd4458>")
+    "$<$<BOOL:${MSVC}>:-Xcompiler=/W4 /wd4297 /wd4458>")
 set_target_properties(EEDI2CUDA PROPERTIES CUDA_ARCHITECTURES "50-virtual")

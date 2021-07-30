@@ -5,6 +5,7 @@
 #include <tuple>
 #include <type_traits>
 #include <utility>
+#include <vector>
 
 #include <boost/numeric/conversion/cast.hpp>
 #include <boost/sync/semaphore.hpp>
@@ -56,15 +57,16 @@ template <typename T> class EEDI2Instance {
   unsigned d_pitch;
 
 public:
-  EEDI2Instance(const VSMap *in, const VSAPI *vsapi) : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
-    initParams(in, vsapi);
-    initCuda();
-    tuneKernels();
-  }
-
   EEDI2Instance(const EEDI2Instance &other, const VSAPI *vsapi)
       : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi), vi2(std::make_unique<VSVideoInfo>(*other.vi2)),
         d(other.d), map(other.map), pp(other.pp), fieldS(other.fieldS), d_pitch(other.d_pitch) {
+    initCuda();
+  }
+
+  EEDI2Instance(VSNodeRef *node, const VSVideoInfo *vi, const VSVideoInfo *vi2, EEDI2Param d, unsigned map, unsigned pp, unsigned fieldS,
+                unsigned d_pitch, const VSAPI *vsapi)
+      : node(vsapi->cloneNodeRef(node), vsapi->freeNode), vi(vi), vi2(std::make_unique<VSVideoInfo>(*vi2)), d(d), map(map), pp(pp),
+        fieldS(fieldS), d_pitch(d_pitch) {
     initCuda();
   }
 
@@ -77,63 +79,6 @@ public:
   }
 
 private:
-  void initParams(const VSMap *in, const VSAPI *vsapi) {
-    using invalid_arg = std::invalid_argument;
-
-    vi = vsapi->getVideoInfo(node.get());
-    vi2 = std::make_unique<VSVideoInfo>(*vi);
-    const auto &fmt = *vi->format;
-
-    if (!isConstantFormat(vi) || fmt.sampleType != stInteger || fmt.bytesPerSample > 2)
-      throw invalid_arg("only constant format 8-16 bits integer input supported");
-    if (vi->width < 8 || vi->height < 7)
-      throw invalid_arg("clip resolution too low");
-
-    auto propGetIntDefault = [&](const char *key, int64_t def) {
-      int err;
-      auto ret = vsapi->propGetInt(in, key, 0, &err);
-      return err ? def : ret;
-    };
-
-    numeric_cast_to(fieldS, vsapi->propGetInt(in, "field", 0, nullptr));
-
-    numeric_cast_to(d.mthresh, propGetIntDefault("mthresh", 10));
-    numeric_cast_to(d.lthresh, propGetIntDefault("lthresh", 20));
-    numeric_cast_to(d.vthresh, propGetIntDefault("vthresh", 20));
-
-    numeric_cast_to(d.estr, propGetIntDefault("estr", 2));
-    numeric_cast_to(d.dstr, propGetIntDefault("dstr", 4));
-    numeric_cast_to(d.maxd, propGetIntDefault("maxd", 24));
-
-    numeric_cast_to(map, propGetIntDefault("map", 0));
-    numeric_cast_to(pp, propGetIntDefault("pp", 1));
-
-    unsigned nt;
-    numeric_cast_to(nt, propGetIntDefault("nt", 50));
-
-    if (fieldS > 3)
-      throw invalid_arg("field must be 0, 1, 2 or 3");
-    if (d.maxd < 1 || d.maxd > 29)
-      throw invalid_arg("maxd must be between 1 and 29 (inclusive)");
-    if (map > 3)
-      throw invalid_arg("map must be 0, 1, 2 or 3");
-    if (pp > 3)
-      throw invalid_arg("pp must be 0, 1, 2 or 3");
-
-    if (map == 0 || map == 3)
-      vi2->height *= 2;
-
-    d.mthresh *= d.mthresh;
-    d.vthresh *= 81;
-
-    nt <<= sizeof(T) * 8 - 8;
-    d.nt4 = nt * 4;
-    d.nt7 = nt * 7;
-    d.nt8 = nt * 8;
-    d.nt13 = nt * 13;
-    d.nt19 = nt * 19;
-  }
-
   void initCuda() {
     // create stream
     try {
@@ -172,12 +117,7 @@ private:
 public:
   const VSVideoInfo *getOutputVI() const { return vi2.get(); }
 
-  VSFrameRef *getFrame(int n, int activationReason, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
-    if (activationReason == arInitial) {
-      vsapi->requestFrameFilter(n, node.get(), frameCtx);
-      return nullptr;
-    } else if (activationReason != arAllFramesReady)
-      return nullptr;
+  VSFrameRef *getFrame(int n, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
 
     auto field = fieldS;
     if (field > 1)
@@ -288,8 +228,99 @@ public:
   }
 };
 
+template <typename T> class EEDI2Pipeline {
+  std::vector<std::unique_ptr<EEDI2Instance<T>>> steps;
+  std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
+
+public:
+  EEDI2Pipeline(const VSMap *in, const VSAPI *vsapi) : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
+    using invalid_arg = std::invalid_argument;
+
+    const VSVideoInfo *vi = vsapi->getVideoInfo(node.get());
+    auto vi2 = std::make_unique<VSVideoInfo>(*vi);
+    EEDI2Param d;
+    const auto &fmt = *vi->format;
+    unsigned map, pp, fieldS;
+    unsigned d_pitch;
+
+    if (!isConstantFormat(vi) || fmt.sampleType != stInteger || fmt.bytesPerSample > 2)
+      throw invalid_arg("only constant format 8-16 bits integer input supported");
+    if (vi->width < 8 || vi->height < 7)
+      throw invalid_arg("clip resolution too low");
+
+    auto propGetIntDefault = [&](const char *key, int64_t def) {
+      int err;
+      auto ret = vsapi->propGetInt(in, key, 0, &err);
+      return err ? def : ret;
+    };
+
+    numeric_cast_to(fieldS, vsapi->propGetInt(in, "field", 0, nullptr));
+
+    numeric_cast_to(d.mthresh, propGetIntDefault("mthresh", 10));
+    numeric_cast_to(d.lthresh, propGetIntDefault("lthresh", 20));
+    numeric_cast_to(d.vthresh, propGetIntDefault("vthresh", 20));
+
+    numeric_cast_to(d.estr, propGetIntDefault("estr", 2));
+    numeric_cast_to(d.dstr, propGetIntDefault("dstr", 4));
+    numeric_cast_to(d.maxd, propGetIntDefault("maxd", 24));
+
+    numeric_cast_to(map, propGetIntDefault("map", 0));
+    numeric_cast_to(pp, propGetIntDefault("pp", 1));
+
+    unsigned nt;
+    numeric_cast_to(nt, propGetIntDefault("nt", 50));
+
+    if (fieldS > 3)
+      throw invalid_arg("field must be 0, 1, 2 or 3");
+    if (d.maxd < 1 || d.maxd > 29)
+      throw invalid_arg("maxd must be between 1 and 29 (inclusive)");
+    if (map > 3)
+      throw invalid_arg("map must be 0, 1, 2 or 3");
+    if (pp > 3)
+      throw invalid_arg("pp must be 0, 1, 2 or 3");
+
+    if (map == 0 || map == 3)
+      vi2->height *= 2;
+
+    d.mthresh *= d.mthresh;
+    d.vthresh *= 81;
+
+    nt <<= sizeof(T) * 8 - 8;
+    d.nt4 = nt * 4;
+    d.nt7 = nt * 7;
+    d.nt8 = nt * 8;
+    d.nt13 = nt * 13;
+    d.nt19 = nt * 19;
+
+    steps.emplace_back(std::move(std::make_unique<EEDI2Instance<T>>(node.get(), vi, vi2.get(), d, map, pp, fieldS, d_pitch, vsapi)));
+
+    steps.shrink_to_fit();
+  }
+
+  EEDI2Pipeline(const EEDI2Pipeline &other, const VSAPI *vsapi) : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode) {
+    steps.reserve(other.steps.size());
+    for (const auto &step : other.steps)
+      steps.emplace_back(std::move(std::make_unique<EEDI2Instance<T>>(*step, vsapi)));
+  }
+
+  const VSVideoInfo *getOutputVI() const { return steps.back()->getOutputVI(); }
+
+  VSFrameRef *getFrame(int n, int activationReason, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
+    if (activationReason == arInitial) {
+      vsapi->requestFrameFilter(n, node.get(), frameCtx);
+      return nullptr;
+    } else if (activationReason != arAllFramesReady)
+      return nullptr;
+
+    for (auto &step : steps)
+      return step->getFrame(n, frameCtx, core, vsapi);
+
+    unreachable();
+  }
+};
+
 template <typename T> struct EEDI2Data {
-  using EEDI2Item = std::pair<EEDI2Instance<T>, std::atomic_flag>;
+  using EEDI2Item = std::pair<EEDI2Pipeline<T>, std::atomic_flag>;
 
   unsigned num_streams;
 
@@ -315,9 +346,9 @@ public:
       items[i].~EEDI2Item();
   }
 
-  EEDI2Instance<T> &firstInstance() { return items()[0].first; }
+  EEDI2Pipeline<T> &firstInstance() { return items()[0].first; }
 
-  EEDI2Instance<T> &acquireInstance() {
+  EEDI2Pipeline<T> &acquireInstance() {
     if (num_streams == 1)
       return firstInstance();
     semaphore.wait();
@@ -329,7 +360,7 @@ public:
     unreachable();
   }
 
-  void releaseInstance(const EEDI2Instance<T> &instance) {
+  void releaseInstance(const EEDI2Pipeline<T> &instance) {
     if (num_streams == 1)
       return;
     auto items = this->items();
@@ -348,7 +379,7 @@ public:
     return p;
   }
 
-  static void operator delete(void *p, unsigned num_streams) { ::operator delete(p); }
+  static void operator delete(void *p, unsigned) { ::operator delete(p); }
 
   static void operator delete(void *p) { ::operator delete(p); }
 };
@@ -1269,14 +1300,14 @@ template <typename T> void EEDI2Instance<T>::tuneKernels() {
   try_cuda(cudaFuncSetAttribute(postProcess<T>, cudaFuncAttributePreferredSharedMemoryCarveout, 0));
 }
 
-template <typename T> void VS_CC eedi2Init(VSMap *_in, VSMap *_out, void **instanceData, VSNode *node, VSCore *_core, const VSAPI *vsapi) {
+template <typename T> void VS_CC eedi2Init(VSMap *, VSMap *, void **instanceData, VSNode *node, VSCore *, const VSAPI *vsapi) {
   auto data = static_cast<EEDI2Data<T> *>(*instanceData);
   vsapi->setVideoInfo(data->firstInstance().getOutputVI(), 1, node);
 }
 
 template <typename T>
-const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason, void **instanceData, void **_frameData, VSFrameContext *frameCtx,
-                                      VSCore *core, const VSAPI *vsapi) {
+const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason, void **instanceData, void **, VSFrameContext *frameCtx, VSCore *core,
+                                      const VSAPI *vsapi) {
 
   auto data = static_cast<EEDI2Data<T> *>(*instanceData);
   const VSFrameRef *out = nullptr;
@@ -1296,7 +1327,7 @@ const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason, void **instan
   return out;
 }
 
-template <typename T> void VS_CC eedi2Free(void *instanceData, VSCore *_core, const VSAPI *vsapi) {
+template <typename T> void VS_CC eedi2Free(void *instanceData, VSCore *, const VSAPI *) {
   auto data = static_cast<EEDI2Data<T> *>(instanceData);
   delete data;
 }
@@ -1317,7 +1348,7 @@ template <typename T> void eedi2CreateInner(const VSMap *in, VSMap *out, const V
   }
 }
 
-void VS_CC eedi2Create(const VSMap *in, VSMap *out, void *_userData, VSCore *core, const VSAPI *vsapi) {
+void VS_CC eedi2Create(const VSMap *in, VSMap *out, void *, VSCore *core, const VSAPI *vsapi) {
   VSNodeRef *node = vsapi->propGetNode(in, "clip", 0, nullptr);
   const VSVideoInfo *vi = vsapi->getVideoInfo(node);
   vsapi->freeNode(node);
