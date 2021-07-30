@@ -34,13 +34,19 @@ template <typename Td, typename Ts> void narrow_cast_to(Td &dst, Ts src) { dst =
 
 template <typename T> struct Pass {
   virtual ~Pass() = default;
-  virtual const VSVideoInfo *getOutputVI() const = 0;
   virtual T *getSrcDevPtr() = 0;
   virtual unsigned getSrcPitch() = 0;
   virtual const T *getDstDevPtr() const = 0;
   virtual unsigned getDstPitch() = 0;
   virtual void process(int n, int plane, cudaStream_t stream) = 0;
-  [[nodiscard]] virtual Pass *dup(const VSAPI *vsapi) const = 0;
+  [[nodiscard]] virtual Pass *dup() const = 0;
+
+  const VSVideoInfo &getOutputVI() const { return vi2; };
+
+  Pass(const VSVideoInfo &vi, const VSVideoInfo &vi2) : vi(vi), vi2(vi2) {}
+
+protected:
+  VSVideoInfo vi, vi2;
 };
 
 struct EEDI2Param {
@@ -54,9 +60,6 @@ struct EEDI2Param {
 };
 
 template <typename T> class EEDI2Pass final : public Pass<T> {
-  std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
-  std::unique_ptr<VSVideoInfo> vi;
-  std::unique_ptr<VSVideoInfo> vi2;
   EEDI2Param d;
 
   T *dst, *msk, *src, *tmp;
@@ -66,21 +69,17 @@ template <typename T> class EEDI2Pass final : public Pass<T> {
   unsigned d_pitch;
 
 public:
-  EEDI2Pass(const EEDI2Pass &other, const VSAPI *vsapi)
-      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(std::make_unique<VSVideoInfo>(*other.vi)),
-        vi2(std::make_unique<VSVideoInfo>(*other.vi2)), d(other.d), map(other.map), pp(other.pp), fieldS(other.fieldS),
-        d_pitch(other.d_pitch) {
+  EEDI2Pass(const EEDI2Pass &other)
+      : Pass<T>(other), d(other.d), map(other.map), pp(other.pp), fieldS(other.fieldS), d_pitch(other.d_pitch) {
     initCuda();
   }
 
-  EEDI2Pass(VSNodeRef *node, const VSVideoInfo *vi, const VSVideoInfo *vi2, EEDI2Param d, unsigned map, unsigned pp, unsigned fieldS,
-            const VSAPI *vsapi)
-      : node(vsapi->cloneNodeRef(node), vsapi->freeNode), vi(std::make_unique<VSVideoInfo>(*vi)), vi2(std::make_unique<VSVideoInfo>(*vi2)),
-        d(d), map(map), pp(pp), fieldS(fieldS) {
+  EEDI2Pass(const VSVideoInfo &vi, const VSVideoInfo &vi2, EEDI2Param d, unsigned map, unsigned pp, unsigned fieldS)
+      : Pass<T>(vi, vi2), d(d), map(map), pp(pp), fieldS(fieldS) {
     initCuda();
   }
 
-  [[nodiscard]] Pass<T> *dup(const VSAPI *vsapi) const override { return new EEDI2Pass(*this, vsapi); }
+  [[nodiscard]] Pass<T> *dup() const override { return new EEDI2Pass(*this); }
 
   ~EEDI2Pass() override {
     try_cuda(cudaFree(dst));
@@ -93,8 +92,8 @@ private:
     constexpr size_t numMem2x = 6;
     T **mem = &dst;
     size_t pitch;
-    auto width = vi->width;
-    auto height = vi->height;
+    auto width = vi.width;
+    auto height = vi.height;
     auto height2x = height * 2;
     try_cuda(cudaMallocPitch(&mem[0], &pitch, width * sizeof(T), height * numMem));
     narrow_cast_to(d_pitch, pitch);
@@ -112,7 +111,6 @@ private:
   }
 
 public:
-  const VSVideoInfo *getOutputVI() const override { return vi2.get(); }
   T *getSrcDevPtr() override { return src; }
   unsigned getSrcPitch() override { return d_pitch; }
   const T *getDstDevPtr() const override {
@@ -134,10 +132,10 @@ public:
     if (field > 1)
       field = (n & 1) ? (field == 2 ? 1 : 0) : (field == 2 ? 0 : 1);
 
-    auto subSampling = plane ? vi->format->subSamplingW : 0u;
+    auto subSampling = plane ? vi.format->subSamplingW : 0u;
 
-    auto width = vi->width >> subSampling;
-    auto height = vi->height >> subSampling;
+    auto width = vi.width >> subSampling;
+    auto height = vi.height >> subSampling;
     auto height2x = height * 2;
     auto width_bytes = width * sizeof(T);
     auto d_pitch = this->d_pitch >> subSampling;
@@ -206,53 +204,41 @@ public:
 };
 
 template <typename T> class TransposePass final : public Pass<T> {
-  std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
-  std::unique_ptr<VSVideoInfo> vi;
-  std::unique_ptr<VSVideoInfo> vi2;
-
   T *src, *dst;
   unsigned d_pitch_src, d_pitch_dst;
 
 public:
-  TransposePass(const TransposePass &other, const VSAPI *vsapi)
-      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(std::make_unique<VSVideoInfo>(*other.vi)),
-        vi2(std::make_unique<VSVideoInfo>(*other.vi2)) {
-    initCuda();
-  }
+  TransposePass(const TransposePass &other) : Pass<T>(other) { initCuda(); }
 
-  TransposePass(VSNodeRef *node, const VSVideoInfo *vi, const VSVideoInfo *vi2, const VSAPI *vsapi)
-      : node(vsapi->cloneNodeRef(node), vsapi->freeNode), vi(std::make_unique<VSVideoInfo>(*vi)), vi2(std::make_unique<VSVideoInfo>(*vi2)) {
-    initCuda();
-  }
+  TransposePass(const VSVideoInfo &vi, const VSVideoInfo &vi2) : Pass<T>(vi, vi2) { initCuda(); }
 
   ~TransposePass() override {
     try_cuda(cudaFree(src));
     try_cuda(cudaFree(dst));
   }
 
-  [[nodiscard]] Pass<T> *dup(const VSAPI *vsapi) const override { return new TransposePass(*this, vsapi); }
+  [[nodiscard]] Pass<T> *dup() const override { return new TransposePass(*this); }
 
 private:
   void initCuda() {
     size_t pitch_src, pitch_dst;
-    try_cuda(cudaMallocPitch(&src, &pitch_src, vi->width * sizeof(T), vi->height));
-    try_cuda(cudaMallocPitch(&dst, &pitch_dst, vi2->width * sizeof(T), vi2->height));
+    try_cuda(cudaMallocPitch(&src, &pitch_src, vi.width * sizeof(T), vi.height));
+    try_cuda(cudaMallocPitch(&dst, &pitch_dst, vi2.width * sizeof(T), vi2.height));
     narrow_cast_to(d_pitch_src, pitch_src);
     narrow_cast_to(d_pitch_dst, pitch_dst);
   }
 
 public:
-  const VSVideoInfo *getOutputVI() const override { return vi2.get(); }
   T *getSrcDevPtr() override { return src; }
   unsigned getSrcPitch() override { return d_pitch_src; }
   const T *getDstDevPtr() const override { return dst; }
   unsigned getDstPitch() override { return d_pitch_dst; }
 
   void process(int, int plane, cudaStream_t stream) override {
-    auto sw = !!plane * vi->format->subSamplingW;
-    auto sh = !!plane * vi->format->subSamplingH;
-    auto width = vi->width >> sw;
-    auto height = vi->height >> sh;
+    auto sw = !!plane * vi.format->subSamplingW;
+    auto sh = !!plane * vi.format->subSamplingH;
+    auto width = vi.width >> sw;
+    auto height = vi.height >> sh;
     dim3 blocks = dim3(64, 8);
     dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
     transpose<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src / sizeof(T) >> sw, d_pitch_dst / sizeof(T) >> sh);
@@ -262,7 +248,7 @@ public:
 template <typename T> class Pipeline {
   std::vector<std::unique_ptr<Pass<T>>> passes;
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
-  const VSVideoInfo *vi;
+  VSVideoInfo vi;
   cudaStream_t stream;
   T *h_src, *h_dst;
 
@@ -271,15 +257,15 @@ public:
       : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
     using invalid_arg = std::invalid_argument;
 
-    vi = vsapi->getVideoInfo(node.get());
-    auto vi2 = std::make_unique<VSVideoInfo>(*vi);
+    vi = *vsapi->getVideoInfo(node.get());
+    auto vi2 = vi;
     EEDI2Param d;
-    const auto &fmt = *vi->format;
+    const auto &fmt = *vi.format;
     unsigned map, pp, fieldS;
 
-    if (!isConstantFormat(vi) || fmt.sampleType != stInteger || fmt.bytesPerSample > 2)
+    if (!isConstantFormat(&vi) || fmt.sampleType != stInteger || fmt.bytesPerSample > 2)
       throw invalid_arg("only constant format 8-16 bits integer input supported");
-    if (vi->width < 8 || vi->height < 7)
+    if (vi.width < 8 || vi.height < 7)
       throw invalid_arg("clip resolution too low");
 
     auto propGetIntDefault = [&](const char *key, int64_t def) {
@@ -317,7 +303,7 @@ public:
       throw invalid_arg("pp must be 0, 1, 2 or 3");
 
     if (map == 0 || map == 3)
-      vi2->height *= 2;
+      vi2.height *= 2;
 
     d.mthresh *= d.mthresh;
     d.vthresh *= 81;
@@ -329,18 +315,18 @@ public:
     d.nt13 = nt * 13;
     d.nt19 = nt * 19;
 
-    passes.emplace_back(std::make_unique<EEDI2Pass<T>>(node.get(), vi, vi2.get(), d, map, pp, fieldS, vsapi));
+    passes.emplace_back(std::make_unique<EEDI2Pass<T>>(vi, vi2, d, map, pp, fieldS));
 
     if (filterName != "EEDI2") {
-      auto vi3 = std::make_unique<VSVideoInfo>(*vi2);
-      std::swap(vi3->width, vi3->height); // XXX: this is correct for 420 & 444 only
-      passes.emplace_back(std::make_unique<TransposePass<T>>(node.get(), vi2.get(), vi3.get(), vsapi));
-      auto vi4 = std::make_unique<VSVideoInfo>(*vi3);
-      vi4->height *= 2;
-      passes.emplace_back(std::make_unique<EEDI2Pass<T>>(node.get(), vi3.get(), vi4.get(), d, map, pp, fieldS, vsapi));
-      auto vi5 = std::make_unique<VSVideoInfo>(*vi4);
-      std::swap(vi5->width, vi5->height);
-      passes.emplace_back(std::make_unique<TransposePass<T>>(node.get(), vi4.get(), vi5.get(), vsapi));
+      auto vi3 = vi2;
+      std::swap(vi3.width, vi3.height); // XXX: this is correct for 420 & 444 only
+      passes.emplace_back(std::make_unique<TransposePass<T>>(vi2, vi3));
+      auto vi4 = vi3;
+      vi4.height *= 2;
+      passes.emplace_back(std::make_unique<EEDI2Pass<T>>(vi3, vi4, d, map, pp, fieldS));
+      auto vi5 = vi4;
+      std::swap(vi5.width, vi5.height);
+      passes.emplace_back(std::make_unique<TransposePass<T>>(vi4, vi5));
     }
 
     passes.shrink_to_fit();
@@ -351,7 +337,7 @@ public:
   Pipeline(const Pipeline &other, const VSAPI *vsapi) : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi) {
     passes.reserve(other.passes.size());
     for (const auto &step : other.passes)
-      passes.emplace_back(std::unique_ptr<Pass<T>>(step->dup(vsapi)));
+      passes.emplace_back(std::unique_ptr<Pass<T>>(step->dup()));
 
     initCuda();
   }
@@ -361,7 +347,7 @@ public:
     try_cuda(cudaFreeHost(h_dst));
   }
 
-  const VSVideoInfo *getOutputVI() const { return passes.back()->getOutputVI(); }
+  const VSVideoInfo &getOutputVI() const { return passes.back()->getOutputVI(); }
 
   VSFrameRef *getFrame(int n, int activationReason, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
     if (activationReason == arInitial) {
@@ -375,9 +361,9 @@ public:
     std::unique_ptr<const VSFrameRef, void (*const)(const VSFrameRef *)> src_frame{vsapi->getFrameFilter(n, node.get(), frameCtx),
                                                                                    vsapi->freeFrame};
     std::unique_ptr<VSFrameRef, void (*const)(const VSFrameRef *)> dst_frame{
-        vsapi->newVideoFrame(vi2->format, vi2->width, vi2->height, src_frame.get(), core), vsapi->freeFrame};
+        vsapi->newVideoFrame(vi2.format, vi2.width, vi2.height, src_frame.get(), core), vsapi->freeFrame};
 
-    for (int plane = 0; plane < vi->format->numPlanes; ++plane) {
+    for (int plane = 0; plane < vi.format->numPlanes; ++plane) {
       auto src_width = vsapi->getFrameWidth(src_frame.get(), plane);
       auto src_height = vsapi->getFrameHeight(src_frame.get(), plane);
       auto dst_width = vsapi->getFrameWidth(dst_frame.get(), plane);
@@ -390,8 +376,8 @@ public:
       auto s_dst = vsapi->getWritePtr(dst_frame.get(), plane);
       auto d_src = passes.front()->getSrcDevPtr();
       auto d_dst = passes.back()->getDstDevPtr();
-      auto d_pitch_src = passes.front()->getSrcPitch() >> !!plane * vi->format->subSamplingW;
-      auto d_pitch_dst = passes.back()->getDstPitch() >> !!plane * vi2->format->subSamplingW;
+      auto d_pitch_src = passes.front()->getSrcPitch() >> !!plane * vi.format->subSamplingW;
+      auto d_pitch_dst = passes.back()->getDstPitch() >> !!plane * vi2.format->subSamplingW;
 
       // upload
       vs_bitblt(h_src, d_pitch_src, s_src, s_pitch_src, src_width_bytes, src_height);
@@ -403,10 +389,10 @@ public:
         if (i) {
           auto &last = *passes[i - 1];
           auto last_vi = last.getOutputVI();
-          auto sw = !!plane * last_vi->format->subSamplingW;
-          auto sh = !!plane * last_vi->format->subSamplingH;
+          auto sw = !!plane * last_vi.format->subSamplingW;
+          auto sh = !!plane * last_vi.format->subSamplingH;
           try_cuda(cudaMemcpy2DAsync(cur.getSrcDevPtr(), cur.getSrcPitch() >> sw, last.getDstDevPtr(), last.getDstPitch() >> sw,
-                                     last_vi->width * sizeof(T) >> sw, last_vi->height >> sh, cudaMemcpyDeviceToDevice, stream));
+                                     last_vi.width * sizeof(T) >> sw, last_vi.height >> sh, cudaMemcpyDeviceToDevice, stream));
         }
         cur.process(n, plane, stream);
       }
@@ -430,8 +416,8 @@ private:
 
     auto d_pitch_src = passes.front()->getSrcPitch();
     auto d_pitch_dst = passes.back()->getDstPitch();
-    auto src_height = vi->height;
-    auto dst_height = passes.back()->getOutputVI()->height;
+    auto src_height = vi.height;
+    auto dst_height = passes.back()->getOutputVI().height;
     try_cuda(cudaHostAlloc(&h_src, d_pitch_src * src_height, cudaHostAllocWriteCombined));
     try_cuda(cudaHostAlloc(&h_dst, d_pitch_dst * dst_height, cudaHostAllocDefault));
   }
@@ -1422,7 +1408,7 @@ __global__ void transpose(const T *src, T *dst, const int width, const int heigh
 
 template <typename T> void VS_CC eedi2Init(VSMap *, VSMap *, void **instanceData, VSNode *node, VSCore *, const VSAPI *vsapi) {
   auto data = static_cast<Instance<T> *>(*instanceData);
-  vsapi->setVideoInfo(data->firstReactor().getOutputVI(), 1, node);
+  vsapi->setVideoInfo(&data->firstReactor().getOutputVI(), 1, node);
 }
 
 template <typename T>
