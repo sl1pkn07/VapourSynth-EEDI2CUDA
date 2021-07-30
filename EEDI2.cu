@@ -420,9 +420,7 @@ template <typename T, size_t I, size_t M> __device__ __forceinline__ void Pstar(
 }
 } // namespace bose
 
-template <size_t N, typename T> __device__ __forceinline__ void BoseSort(T *arr) { bose::Pstar<T, 1, N>(arr); }
-
-#define bose_sort_array(arr) BoseSort<sizeof(arr) / sizeof((arr)[0])>(arr)
+template <typename T, size_t N> __device__ __forceinline__ void boseSortArray(T (&arr)[N]) { bose::Pstar<T, 1, N>(arr); }
 
 template <typename T> __device__ __forceinline__ T mmax(T last) { return last; }
 
@@ -679,7 +677,7 @@ template <typename T> KERNEL void calcDirections(const EEDI2Param d, const T *sr
   };
 
   if (k > 1) {
-    bose_sort_array(order);
+    boseSortArray(order);
 
     const int mid = (k & 1) ? order[k / 2] : (order[(k - 1) / 2] + order[k / 2] + 1) / 2;
     const int lim = mmax(limlut[abs(mid)] / 4, 2);
@@ -730,7 +728,7 @@ template <typename T> KERNEL void filterDirMap(const EEDI2Param d, const T *msk,
     return;
   }
 
-  bose_sort_array(order);
+  boseSortArray(order);
 
   const int mid = (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
   const int lim = limlut[abs(mid - neutral) >> shift2] << shift;
@@ -781,7 +779,7 @@ template <typename T> KERNEL void expandDirMap(const EEDI2Param d, const T *msk,
   if (u < 5)
     return;
 
-  bose_sort_array(order);
+  boseSortArray(order);
 
   const int mid = (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
   const int lim = limlut[abs(mid - neutral) >> shift2] << shift;
@@ -875,7 +873,7 @@ template <typename T> KERNEL void markDirections2X(const EEDI2Param d, const T *
   if (v < 3)
     return;
 
-  bose_sort_array(order);
+  boseSortArray(order);
 
   const int mid = (v & 1) ? order[v / 2] : (order[(v - 1) / 2] + order[v / 2] + 1) / 2;
   const int lim = limlut[abs(mid - neutral) >> shift2] << shift;
@@ -936,7 +934,7 @@ template <typename T> KERNEL void filterDirMap2X(const EEDI2Param d, const T *ms
     return;
   }
 
-  bose_sort_array(order);
+  boseSortArray(order);
 
   const int mid = (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
   const int lim = limlut[abs(mid - neutral) >> shift2] << shift;
@@ -990,7 +988,7 @@ template <typename T> KERNEL void expandDirMap2X(const EEDI2Param d, const T *ms
   if (u < 5)
     return;
 
-  bose_sort_array(order);
+  boseSortArray(order);
 
   const int mid = (u & 1) ? order[u / 2] : (order[(u - 1) / 2] + order[u / 2] + 1) / 2;
   const int lim = limlut[abs(mid - neutral) >> shift2] << shift;
