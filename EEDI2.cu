@@ -52,7 +52,7 @@ template <typename T> class EEDI2Instance {
 
   T *h_src, *h_dst;
 
-  unsigned map, pp, field, fieldS;
+  unsigned map, pp, fieldS;
   unsigned d_pitch;
 
 public:
@@ -64,7 +64,7 @@ public:
 
   EEDI2Instance(const EEDI2Instance &other, const VSAPI *vsapi)
       : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi), vi2(std::make_unique<VSVideoInfo>(*other.vi2)),
-        d(other.d), map(other.map), pp(other.pp), field(other.field), fieldS(other.fieldS), d_pitch(other.d_pitch) {
+        d(other.d), map(other.map), pp(other.pp), fieldS(other.fieldS), d_pitch(other.d_pitch) {
     initCuda();
   }
 
@@ -95,7 +95,7 @@ private:
       return err ? def : ret;
     };
 
-    numeric_cast_to(field, vsapi->propGetInt(in, "field", 0, nullptr));
+    numeric_cast_to(fieldS, vsapi->propGetInt(in, "field", 0, nullptr));
 
     numeric_cast_to(d.mthresh, propGetIntDefault("mthresh", 10));
     numeric_cast_to(d.lthresh, propGetIntDefault("lthresh", 20));
@@ -111,7 +111,7 @@ private:
     unsigned nt;
     numeric_cast_to(nt, propGetIntDefault("nt", 50));
 
-    if (field > 3)
+    if (fieldS > 3)
       throw invalid_arg("field must be 0, 1, 2 or 3");
     if (d.maxd < 1 || d.maxd > 29)
       throw invalid_arg("maxd must be between 1 and 29 (inclusive)");
@@ -119,12 +119,6 @@ private:
       throw invalid_arg("map must be 0, 1, 2 or 3");
     if (pp > 3)
       throw invalid_arg("pp must be 0, 1, 2 or 3");
-
-    fieldS = field;
-    if (fieldS == 2)
-      field = 0;
-    else if (fieldS == 3)
-      field = 1;
 
     if (map == 0 || map == 3)
       vi2->height *= 2;
@@ -185,9 +179,9 @@ public:
     } else if (activationReason != arAllFramesReady)
       return nullptr;
 
-    auto field = this->field;
-    if (fieldS > 1)
-      field = (n & 1) ? (fieldS == 2 ? 1 : 0) : (fieldS == 2 ? 0 : 1);
+    auto field = fieldS;
+    if (field > 1)
+      field = (n & 1) ? (field == 2 ? 1 : 0) : (field == 2 ? 0 : 1);
 
     std::unique_ptr<const VSFrameRef, void (*const)(const VSFrameRef *)> src_frame{vsapi->getFrameFilter(n, node.get(), frameCtx),
                                                                                    vsapi->freeFrame};
