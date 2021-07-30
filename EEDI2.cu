@@ -1,3 +1,4 @@
+#include <algorithm>
 #include <atomic>
 #include <limits>
 #include <memory>
@@ -54,7 +55,7 @@ struct EEDI2Param {
 
 template <typename T> class EEDI2Pass final : public Pass<T> {
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
-  const VSVideoInfo *vi;
+  std::unique_ptr<VSVideoInfo> vi;
   std::unique_ptr<VSVideoInfo> vi2;
   EEDI2Param d;
 
@@ -66,15 +67,16 @@ template <typename T> class EEDI2Pass final : public Pass<T> {
 
 public:
   EEDI2Pass(const EEDI2Pass &other, const VSAPI *vsapi)
-      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi), vi2(std::make_unique<VSVideoInfo>(*other.vi2)),
-        d(other.d), map(other.map), pp(other.pp), fieldS(other.fieldS), d_pitch(other.d_pitch) {
+      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(std::make_unique<VSVideoInfo>(*other.vi)),
+        vi2(std::make_unique<VSVideoInfo>(*other.vi2)), d(other.d), map(other.map), pp(other.pp), fieldS(other.fieldS),
+        d_pitch(other.d_pitch) {
     initCuda();
   }
 
   EEDI2Pass(VSNodeRef *node, const VSVideoInfo *vi, const VSVideoInfo *vi2, EEDI2Param d, unsigned map, unsigned pp, unsigned fieldS,
-            unsigned d_pitch, const VSAPI *vsapi)
-      : node(vsapi->cloneNodeRef(node), vsapi->freeNode), vi(vi), vi2(std::make_unique<VSVideoInfo>(*vi2)), d(d), map(map), pp(pp),
-        fieldS(fieldS), d_pitch(d_pitch) {
+            const VSAPI *vsapi)
+      : node(vsapi->cloneNodeRef(node), vsapi->freeNode), vi(std::make_unique<VSVideoInfo>(*vi)), vi2(std::make_unique<VSVideoInfo>(*vi2)),
+        d(d), map(map), pp(pp), fieldS(fieldS) {
     initCuda();
   }
 
@@ -93,7 +95,7 @@ private:
     size_t pitch;
     auto width = vi->width;
     auto height = vi->height;
-    auto height2x = vi2->height;
+    auto height2x = height * 2;
     try_cuda(cudaMallocPitch(&mem[0], &pitch, width * sizeof(T), height * numMem));
     narrow_cast_to(d_pitch, pitch);
     for (size_t i = 1; i < numMem; ++i)
@@ -203,6 +205,60 @@ public:
   }
 };
 
+template <typename T> class TransposePass final : public Pass<T> {
+  std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
+  std::unique_ptr<VSVideoInfo> vi;
+  std::unique_ptr<VSVideoInfo> vi2;
+
+  T *src, *dst;
+  unsigned d_pitch_src, d_pitch_dst;
+
+public:
+  TransposePass(const TransposePass &other, const VSAPI *vsapi)
+      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(std::make_unique<VSVideoInfo>(*other.vi)),
+        vi2(std::make_unique<VSVideoInfo>(*other.vi2)) {
+    initCuda();
+  }
+
+  TransposePass(VSNodeRef *node, const VSVideoInfo *vi, const VSVideoInfo *vi2, const VSAPI *vsapi)
+      : node(vsapi->cloneNodeRef(node), vsapi->freeNode), vi(std::make_unique<VSVideoInfo>(*vi)), vi2(std::make_unique<VSVideoInfo>(*vi2)) {
+    initCuda();
+  }
+
+  ~TransposePass() override {
+    try_cuda(cudaFree(src));
+    try_cuda(cudaFree(dst));
+  }
+
+  [[nodiscard]] Pass<T> *dup(const VSAPI *vsapi) const override { return new TransposePass(*this, vsapi); }
+
+private:
+  void initCuda() {
+    size_t pitch_src, pitch_dst;
+    try_cuda(cudaMallocPitch(&src, &pitch_src, vi->width * sizeof(T), vi->height));
+    try_cuda(cudaMallocPitch(&dst, &pitch_dst, vi2->width * sizeof(T), vi2->height));
+    narrow_cast_to(d_pitch_src, pitch_src);
+    narrow_cast_to(d_pitch_dst, pitch_dst);
+  }
+
+public:
+  const VSVideoInfo *getOutputVI() const override { return vi2.get(); }
+  T *getSrcDevPtr() override { return src; }
+  unsigned getSrcPitch() override { return d_pitch_src; }
+  const T *getDstDevPtr() const override { return dst; }
+  unsigned getDstPitch() override { return d_pitch_dst; }
+
+  void process(int, int plane, cudaStream_t stream) override {
+    auto sw = !!plane * vi->format->subSamplingW;
+    auto sh = !!plane * vi->format->subSamplingH;
+    auto width = vi->width >> sw;
+    auto height = vi->height >> sh;
+    dim3 blocks = dim3(64, 8);
+    dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
+    transpose<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src / sizeof(T) >> sw, d_pitch_dst / sizeof(T) >> sh);
+  }
+};
+
 template <typename T> class Pipeline {
   std::vector<std::unique_ptr<Pass<T>>> passes;
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
@@ -211,7 +267,8 @@ template <typename T> class Pipeline {
   T *h_src, *h_dst;
 
 public:
-  Pipeline(const VSMap *in, const VSAPI *vsapi) : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
+  Pipeline(std::string_view filterName, const VSMap *in, const VSAPI *vsapi)
+      : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
     using invalid_arg = std::invalid_argument;
 
     vi = vsapi->getVideoInfo(node.get());
@@ -219,7 +276,6 @@ public:
     EEDI2Param d;
     const auto &fmt = *vi->format;
     unsigned map, pp, fieldS;
-    unsigned d_pitch;
 
     if (!isConstantFormat(vi) || fmt.sampleType != stInteger || fmt.bytesPerSample > 2)
       throw invalid_arg("only constant format 8-16 bits integer input supported");
@@ -232,7 +288,10 @@ public:
       return err ? def : ret;
     };
 
-    numeric_cast_to(fieldS, vsapi->propGetInt(in, "field", 0, nullptr));
+    if (filterName == "EEDI2")
+      numeric_cast_to(fieldS, vsapi->propGetInt(in, "field", 0, nullptr));
+    else
+      fieldS = 1;
 
     numeric_cast_to(d.mthresh, propGetIntDefault("mthresh", 10));
     numeric_cast_to(d.lthresh, propGetIntDefault("lthresh", 20));
@@ -270,7 +329,19 @@ public:
     d.nt13 = nt * 13;
     d.nt19 = nt * 19;
 
-    passes.emplace_back(std::make_unique<EEDI2Pass<T>>(node.get(), vi, vi2.get(), d, map, pp, fieldS, d_pitch, vsapi));
+    passes.emplace_back(std::make_unique<EEDI2Pass<T>>(node.get(), vi, vi2.get(), d, map, pp, fieldS, vsapi));
+
+    if (filterName != "EEDI2") {
+      auto vi3 = std::make_unique<VSVideoInfo>(*vi2);
+      std::swap(vi3->width, vi3->height); // XXX: this is correct for 420 & 444 only
+      passes.emplace_back(std::make_unique<TransposePass<T>>(node.get(), vi2.get(), vi3.get(), vsapi));
+      auto vi4 = std::make_unique<VSVideoInfo>(*vi3);
+      vi4->height *= 2;
+      passes.emplace_back(std::make_unique<EEDI2Pass<T>>(node.get(), vi3.get(), vi4.get(), d, map, pp, fieldS, vsapi));
+      auto vi5 = std::make_unique<VSVideoInfo>(*vi4);
+      std::swap(vi5->width, vi5->height);
+      passes.emplace_back(std::make_unique<TransposePass<T>>(node.get(), vi4.get(), vi5.get(), vsapi));
+    }
 
     passes.shrink_to_fit();
 
@@ -375,9 +446,9 @@ template <typename T> class Instance {
   Item *items() { return reinterpret_cast<Item *>(this + 1); }
 
 public:
-  Instance(const VSMap *in, const VSAPI *vsapi) : semaphore(num_streams) {
+  Instance(std::string_view filterName, const VSMap *in, const VSAPI *vsapi) : semaphore(num_streams) {
     auto items = this->items();
-    new (items) Item(std::piecewise_construct, std::forward_as_tuple(in, vsapi), std::forward_as_tuple());
+    new (items) Item(std::piecewise_construct, std::forward_as_tuple(filterName, in, vsapi), std::forward_as_tuple());
     items[0].second.clear();
     for (unsigned i = 1; i < num_streams; ++i) {
       new (items + i) Item(std::piecewise_construct, std::forward_as_tuple(firstReactor(), vsapi), std::forward_as_tuple());
@@ -454,10 +525,9 @@ __device__ int limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12
   if ((value) < (lower) || (value) >= (upper))                                                                                             \
   return
 
-#define stride (d.d_pitch / sizeof(T))
-#define line(p) ((p) + stride * y)
-#define lineOff(p, off) ((p) + int(stride) * (y + (off)))
-#define point(p) ((p)[stride * y + x])
+#define line(p) ((p) + (d.d_pitch / sizeof(T)) * y)
+#define lineOff(p, off) ((p) + int(d.d_pitch / sizeof(T)) * (y + (off)))
+#define point(p) ((p)[(d.d_pitch / sizeof(T)) * y + x])
 
 namespace bose {
 template <typename T, size_t I, size_t J> __device__ __forceinline__ void P(T *arr) {
@@ -1324,6 +1394,32 @@ template <typename T> KERNEL void postProcess(const EEDI2Param d, const T *nmsk,
     out = (dstpp[x] + dstpn[x] + 1) / 2;
 }
 
+template <typename T>
+__global__ void transpose(const T *src, T *dst, const int width, const int height, const int src_stride, const int dst_stride) {
+  constexpr int TILE_DIM = 64;
+  constexpr int BLOCK_ROWS = 8;
+
+  __shared__ T tile[TILE_DIM][TILE_DIM + 1];
+
+  int x = blockIdx.x * TILE_DIM + threadIdx.x;
+  int y = blockIdx.y * TILE_DIM + threadIdx.y;
+
+  if (x < width)
+    for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
+      if (y + j < height)
+        tile[threadIdx.y + j][threadIdx.x] = src[(y + j) * src_stride + x];
+
+  __syncthreads();
+
+  x = blockIdx.y * TILE_DIM + threadIdx.x;
+  y = blockIdx.x * TILE_DIM + threadIdx.y;
+
+  if (x < height)
+    for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
+      if (y + j < width)
+        dst[(y + j) * dst_stride + x] = tile[threadIdx.x][threadIdx.y + j];
+}
+
 template <typename T> void VS_CC eedi2Init(VSMap *, VSMap *, void **instanceData, VSNode *node, VSCore *, const VSAPI *vsapi) {
   auto data = static_cast<Instance<T> *>(*instanceData);
   vsapi->setVideoInfo(data->firstReactor().getOutputVI(), 1, node);
@@ -1356,14 +1452,14 @@ template <typename T> void VS_CC eedi2Free(void *instanceData, VSCore *, const V
   delete data;
 }
 
-template <typename T> void eedi2CreateInner(const VSMap *in, VSMap *out, const VSAPI *vsapi, VSCore *core) {
+template <typename T> void eedi2CreateInner(std::string_view filterName, const VSMap *in, VSMap *out, const VSAPI *vsapi, VSCore *core) {
   try {
     int err;
     unsigned num_streams;
     numeric_cast_to(num_streams, vsapi->propGetInt(in, "num_streams", 0, &err));
     if (err)
       num_streams = 1;
-    auto data = new (num_streams) Instance<T>(in, vsapi);
+    auto data = new (num_streams) Instance<T>(filterName, in, vsapi);
     vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>, eedi2Free<T>, num_streams > 1 ? fmParallel : fmParallelRequests,
                         0, data, core);
   } catch (const std::exception &exc) {
@@ -1372,14 +1468,22 @@ template <typename T> void eedi2CreateInner(const VSMap *in, VSMap *out, const V
   }
 }
 
-void VS_CC eedi2Create(const VSMap *in, VSMap *out, void *, VSCore *core, const VSAPI *vsapi) {
+void eedi2Create(std::string_view filterName, const VSMap *in, VSMap *out, void *, VSCore *core, const VSAPI *vsapi) {
   VSNodeRef *node = vsapi->propGetNode(in, "clip", 0, nullptr);
   const VSVideoInfo *vi = vsapi->getVideoInfo(node);
   vsapi->freeNode(node);
   if (vi->format->bytesPerSample == 1)
-    eedi2CreateInner<uint8_t>(in, out, vsapi, core);
+    eedi2CreateInner<uint8_t>(filterName, in, out, vsapi, core);
   else
-    eedi2CreateInner<uint16_t>(in, out, vsapi, core);
+    eedi2CreateInner<uint16_t>(filterName, in, out, vsapi, core);
+}
+
+void VS_CC EEDI2Create(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
+  return eedi2Create("EEDI2", in, out, userData, core, vsapi);
+}
+
+void VS_CC Enlarge2Create(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
+  return eedi2Create("Enlarge2", in, out, userData, core, vsapi);
 }
 
 VS_EXTERNAL_API(void)
@@ -1398,5 +1502,18 @@ VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc
                "nt:int:opt;"
                "pp:int:opt;"
                "num_streams:int:opt",
-               eedi2Create, nullptr, plugin);
+               EEDI2Create, nullptr, plugin);
+  registerFunc("Enlarge2",
+               "clip:clip;"
+               "mthresh:int:opt;"
+               "lthresh:int:opt;"
+               "vthresh:int:opt;"
+               "estr:int:opt;"
+               "dstr:int:opt;"
+               "maxd:int:opt;"
+               "map:int:opt;"
+               "nt:int:opt;"
+               "pp:int:opt;"
+               "num_streams:int:opt",
+               Enlarge2Create, nullptr, plugin);
 }
