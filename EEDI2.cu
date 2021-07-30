@@ -41,6 +41,11 @@ template <typename T> struct Pass {
   virtual void process(int n, int plane, cudaStream_t stream) = 0;
   [[nodiscard]] virtual Pass *dup() const = 0;
 
+  virtual void setSrcDevPtr(T *) { throw std::logic_error("this variable is readonly"); }
+  virtual void setSrcPitch(unsigned) { throw std::logic_error("this variable is readonly"); }
+  virtual void setDstDevPtr(T *) { throw std::logic_error("this variable is readonly"); };
+  virtual void setDstPitch(unsigned) { throw std::logic_error("this variable is readonly"); }
+
   const VSVideoInfo &getOutputVI() const { return vi2; };
 
   Pass(const VSVideoInfo &vi, const VSVideoInfo &vi2) : vi(vi), vi2(vi2) {}
@@ -204,31 +209,14 @@ public:
 };
 
 template <typename T> class TransposePass final : public Pass<T> {
-  T *src, *dst;
+  T *src = nullptr, *dst = nullptr;
   unsigned d_pitch_src, d_pitch_dst;
 
 public:
-  TransposePass(const TransposePass &other) : Pass<T>(other) { initCuda(); }
-
-  TransposePass(const VSVideoInfo &vi, const VSVideoInfo &vi2) : Pass<T>(vi, vi2) { initCuda(); }
-
-  ~TransposePass() override {
-    try_cuda(cudaFree(src));
-    try_cuda(cudaFree(dst));
-  }
+  TransposePass(const VSVideoInfo &vi, const VSVideoInfo &vi2) : Pass<T>(vi, vi2) {}
 
   [[nodiscard]] Pass<T> *dup() const override { return new TransposePass(*this); }
 
-private:
-  void initCuda() {
-    size_t pitch_src, pitch_dst;
-    try_cuda(cudaMallocPitch(&src, &pitch_src, vi.width * sizeof(T), vi.height));
-    try_cuda(cudaMallocPitch(&dst, &pitch_dst, vi2.width * sizeof(T), vi2.height));
-    narrow_cast_to(d_pitch_src, pitch_src);
-    narrow_cast_to(d_pitch_dst, pitch_dst);
-  }
-
-public:
   T *getSrcDevPtr() override { return src; }
   unsigned getSrcPitch() override { return d_pitch_src; }
   const T *getDstDevPtr() const override { return dst; }
@@ -243,6 +231,11 @@ public:
     dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
     transpose<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src / sizeof(T) >> sw, d_pitch_dst / sizeof(T) >> sh);
   }
+
+  void setSrcDevPtr(T *p) override { src = p; }
+  void setSrcPitch(unsigned p) override { d_pitch_src = p; }
+  void setDstDevPtr(T *p) override { dst = p; }
+  void setDstPitch(unsigned p) override { d_pitch_dst = p; }
 };
 
 template <typename T> class Pipeline {
@@ -251,6 +244,7 @@ template <typename T> class Pipeline {
   VSVideoInfo vi;
   cudaStream_t stream;
   T *h_src, *h_dst;
+  T *fb_d_src = nullptr, *fb_d_dst = nullptr;
 
 public:
   Pipeline(std::string_view filterName, const VSMap *in, const VSAPI *vsapi)
@@ -345,6 +339,8 @@ public:
   ~Pipeline() {
     try_cuda(cudaFreeHost(h_src));
     try_cuda(cudaFreeHost(h_dst));
+    try_cuda(cudaFree(fb_d_src));
+    try_cuda(cudaFree(fb_d_dst));
   }
 
   const VSVideoInfo &getOutputVI() const { return passes.back()->getOutputVI(); }
@@ -388,11 +384,23 @@ public:
         auto &cur = *passes[i];
         if (i) {
           auto &last = *passes[i - 1];
+          auto &next = *passes[i + 1];
           auto last_vi = last.getOutputVI();
           auto sw = !!plane * last_vi.format->subSamplingW;
           auto sh = !!plane * last_vi.format->subSamplingH;
-          try_cuda(cudaMemcpy2DAsync(cur.getSrcDevPtr(), cur.getSrcPitch() >> sw, last.getDstDevPtr(), last.getDstPitch() >> sw,
-                                     last_vi.width * sizeof(T) >> sw, last_vi.height >> sh, cudaMemcpyDeviceToDevice, stream));
+          if (!cur.getSrcDevPtr()) {
+            cur.setSrcDevPtr(const_cast<T *>(last.getDstDevPtr()));
+            cur.setSrcPitch(last.getDstPitch());
+          }
+          if (!cur.getDstDevPtr()) {
+            cur.setDstDevPtr(next.getSrcDevPtr());
+            cur.setDstPitch(next.getSrcPitch());
+          }
+          auto curPtr = cur.getSrcDevPtr();
+          auto lastPtr = last.getDstDevPtr();
+          if (curPtr != lastPtr)
+            try_cuda(cudaMemcpy2DAsync(curPtr, cur.getSrcPitch() >> sw, lastPtr, last.getDstPitch() >> sw, last_vi.width * sizeof(T) >> sw,
+                                       last_vi.height >> sh, cudaMemcpyDeviceToDevice, stream));
         }
         cur.process(n, plane, stream);
       }
@@ -412,6 +420,21 @@ private:
       try_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
     } catch (const CUDAError &exc) {
       throw CUDAError(exc.what() + " Please upgrade your driver."s);
+    }
+
+    if (auto &firstStep = *passes.front(); !firstStep.getSrcDevPtr()) {
+      size_t pitch;
+      try_cuda(cudaMallocPitch(&fb_d_src, &pitch, vi.width * sizeof(T), vi.height));
+      firstStep.setSrcDevPtr(fb_d_src);
+      firstStep.setSrcPitch(static_cast<unsigned>(pitch));
+    }
+
+    if (auto &lastStep = *passes.back(); !lastStep.getDstDevPtr()) {
+      auto vi2 = lastStep.getOutputVI();
+      size_t pitch;
+      try_cuda(cudaMallocPitch(&fb_d_dst, &pitch, vi2.width * sizeof(T), vi2.height));
+      lastStep.setDstDevPtr(fb_d_dst);
+      lastStep.setDstPitch(static_cast<unsigned>(pitch));
     }
 
     auto d_pitch_src = passes.front()->getSrcPitch();
