@@ -31,6 +31,17 @@ class CUDAError : public std::runtime_error {
 template <typename Td, typename Ts> void numeric_cast_to(Td &dst, Ts src) { dst = boost::numeric_cast<Td>(src); }
 template <typename Td, typename Ts> void narrow_cast_to(Td &dst, Ts src) { dst = static_cast<Td>(src); }
 
+template <typename T> struct Pass {
+  virtual ~Pass() = default;
+  virtual const VSVideoInfo *getOutputVI() const = 0;
+  virtual T *getSrcDevPtr() = 0;
+  virtual unsigned getSrcPitch() = 0;
+  virtual const T *getDstDevPtr() const = 0;
+  virtual unsigned getDstPitch() = 0;
+  virtual void process(int n, int plane, cudaStream_t stream) = 0;
+  [[nodiscard]] virtual Pass *dup(const VSAPI *vsapi) const = 0;
+};
+
 struct EEDI2Param {
   unsigned d_pitch;
   unsigned nt4, nt7, nt8, nt13, nt19;
@@ -41,7 +52,7 @@ struct EEDI2Param {
   int width, height;
 };
 
-template <typename T> class EEDI2Pass {
+template <typename T> class EEDI2Pass final : public Pass<T> {
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
   const VSVideoInfo *vi;
   std::unique_ptr<VSVideoInfo> vi2;
@@ -61,13 +72,15 @@ public:
   }
 
   EEDI2Pass(VSNodeRef *node, const VSVideoInfo *vi, const VSVideoInfo *vi2, EEDI2Param d, unsigned map, unsigned pp, unsigned fieldS,
-                unsigned d_pitch, const VSAPI *vsapi)
+            unsigned d_pitch, const VSAPI *vsapi)
       : node(vsapi->cloneNodeRef(node), vsapi->freeNode), vi(vi), vi2(std::make_unique<VSVideoInfo>(*vi2)), d(d), map(map), pp(pp),
         fieldS(fieldS), d_pitch(d_pitch) {
     initCuda();
   }
 
-  ~EEDI2Pass() {
+  [[nodiscard]] Pass<T> *dup(const VSAPI *vsapi) const override { return new EEDI2Pass(*this, vsapi); }
+
+  ~EEDI2Pass() override {
     try_cuda(cudaFree(dst));
     try_cuda(cudaFree(dst2));
   }
@@ -97,10 +110,10 @@ private:
   }
 
 public:
-  const VSVideoInfo *getOutputVI() const { return vi2.get(); }
-  T *getSrcDevPtr() { return src; }
-  unsigned getSrcPitch() { return d_pitch; }
-  const T *getDstDevPtr() const {
+  const VSVideoInfo *getOutputVI() const override { return vi2.get(); }
+  T *getSrcDevPtr() override { return src; }
+  unsigned getSrcPitch() override { return d_pitch; }
+  const T *getDstDevPtr() const override {
     switch (map) {
     case 0:
       return dst2;
@@ -112,9 +125,9 @@ public:
       return dst;
     }
   }
-  unsigned getDstPitch() { return d_pitch; }
+  unsigned getDstPitch() override { return d_pitch; }
 
-  void process(int n, int plane, cudaStream_t stream) {
+  void process(int n, int plane, cudaStream_t stream) override {
     auto field = fieldS;
     if (field > 1)
       field = (n & 1) ? (field == 2 ? 1 : 0) : (field == 2 ? 0 : 1);
@@ -191,7 +204,7 @@ public:
 };
 
 template <typename T> class Pipeline {
-  std::vector<std::unique_ptr<EEDI2Pass<T>>> passes;
+  std::vector<std::unique_ptr<Pass<T>>> passes;
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
   const VSVideoInfo *vi;
   cudaStream_t stream;
@@ -264,11 +277,10 @@ public:
     initCuda();
   }
 
-  Pipeline(const Pipeline &other, const VSAPI *vsapi)
-      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi) {
+  Pipeline(const Pipeline &other, const VSAPI *vsapi) : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi) {
     passes.reserve(other.passes.size());
     for (const auto &step : other.passes)
-      passes.emplace_back(std::make_unique<EEDI2Pass<T>>(*step, vsapi));
+      passes.emplace_back(std::unique_ptr<Pass<T>>(step->dup(vsapi)));
 
     initCuda();
   }
