@@ -46,12 +46,9 @@ template <typename T> class EEDI2Instance {
   const VSVideoInfo *vi;
   std::unique_ptr<VSVideoInfo> vi2;
   EEDI2Param d;
-  cudaStream_t stream;
 
   T *dst, *msk, *src, *tmp;
   T *dst2, *dst2M, *tmp2, *tmp2_2, *tmp2_3, *msk2;
-
-  T *h_src, *h_dst;
 
   unsigned map, pp, fieldS;
   unsigned d_pitch;
@@ -73,27 +70,17 @@ public:
   ~EEDI2Instance() {
     try_cuda(cudaFree(dst));
     try_cuda(cudaFree(dst2));
-    try_cuda(cudaFreeHost(h_src));
-    try_cuda(cudaFreeHost(h_dst));
-    try_cuda(cudaStreamDestroy(stream));
   }
 
 private:
   void initCuda() {
-    // create stream
-    try {
-      try_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-    } catch (const CUDAError &exc) {
-      throw CUDAError(exc.what() + " Please upgrade your driver."s);
-    }
-
-    // alloc mem
     constexpr size_t numMem = 4;
     constexpr size_t numMem2x = 6;
     T **mem = &dst;
     size_t pitch;
     auto width = vi->width;
     auto height = vi->height;
+    auto height2x = vi2->height;
     try_cuda(cudaMallocPitch(&mem[0], &pitch, width * sizeof(T), height * numMem));
     narrow_cast_to(d_pitch, pitch);
     for (size_t i = 1; i < numMem; ++i)
@@ -103,140 +90,120 @@ private:
       try_cuda(cudaMalloc(&dst2, d_pitch * height * numMem2x * 2));
       mem = &dst2;
       for (size_t i = 1; i < numMem2x; ++i)
-        mem[i] = reinterpret_cast<T *>(reinterpret_cast<char *>(mem[i - 1]) + d_pitch * height * 2);
+        mem[i] = reinterpret_cast<T *>(reinterpret_cast<char *>(mem[i - 1]) + d_pitch * height2x);
     } else {
       dst2 = nullptr;
     }
-
-    try_cuda(cudaHostAlloc(&h_src, d_pitch * height, cudaHostAllocWriteCombined));
-    try_cuda(cudaHostAlloc(&h_dst, d_pitch * height * (map == 0 || map == 3 ? 2 : 1), cudaHostAllocDefault));
   }
 
   void tuneKernels();
 
 public:
   const VSVideoInfo *getOutputVI() const { return vi2.get(); }
+  T *getSrcDevPtr() { return src; }
+  unsigned getSrcPitch() { return d_pitch; }
+  const T *getDstDevPtr() const {
+    switch (map) {
+    case 0:
+      return dst2;
+    case 1:
+      return msk;
+    case 3:
+      return tmp2;
+    default:
+      return dst;
+    }
+  }
+  unsigned getDstPitch() { return d_pitch; }
 
-  VSFrameRef *getFrame(int n, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
-
+  void process(int n, int plane, cudaStream_t stream) {
     auto field = fieldS;
     if (field > 1)
       field = (n & 1) ? (field == 2 ? 1 : 0) : (field == 2 ? 0 : 1);
 
-    std::unique_ptr<const VSFrameRef, void (*const)(const VSFrameRef *)> src_frame{vsapi->getFrameFilter(n, node.get(), frameCtx),
-                                                                                   vsapi->freeFrame};
-    std::unique_ptr<VSFrameRef, void (*const)(const VSFrameRef *)> dst_frame{
-        vsapi->newVideoFrame(vi2->format, vi2->width, vi2->height, src_frame.get(), core), vsapi->freeFrame};
+    auto subSampling = plane ? vi->format->subSamplingW : 0u;
 
-    for (int plane = 0; plane < vi->format->numPlanes; ++plane) {
-      auto width = vsapi->getFrameWidth(src_frame.get(), plane);
-      auto height = vsapi->getFrameHeight(src_frame.get(), plane);
-      auto height2x = height * 2;
-      auto s_pitch = vsapi->getStride(src_frame.get(), plane);
-      auto width_bytes = width * vi->format->bytesPerSample;
-      auto s_src = vsapi->getReadPtr(src_frame.get(), plane);
-      auto s_dst = vsapi->getWritePtr(dst_frame.get(), plane);
-      auto d_src = src;
-      T *d_dst;
-      auto d_pitch = this->d_pitch;
-      int dst_height;
+    auto width = vi->width >> subSampling;
+    auto height = vi->height >> subSampling;
+    auto height2x = height * 2;
+    auto width_bytes = width * sizeof(T);
+    auto d_pitch = this->d_pitch >> subSampling;
 
-      d.field = field;
-      d.width = width;
-      d.height = height;
-      d.subSampling = plane ? vi->format->subSamplingW : 0u;
-      d_pitch >>= d.subSampling;
-      d.d_pitch = d_pitch;
+    d.field = field;
+    d.width = width;
+    d.height = height;
+    d.subSampling = subSampling;
+    d.d_pitch = d_pitch;
 
-      try_cuda(cudaMemcpy2D(h_src, d_pitch, s_src, s_pitch, width_bytes, height, cudaMemcpyHostToHost));
-      try_cuda(cudaMemcpy2DAsync(d_src, d_pitch, h_src, d_pitch, width_bytes, height, cudaMemcpyHostToDevice, stream));
+    dim3 blocks = dim3(64, 1);
+    dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
 
-      dim3 blocks = dim3(64, 1);
-      dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
+    buildEdgeMask<<<grids, blocks, 0, stream>>>(d, src, msk);
+    erode<<<grids, blocks, 0, stream>>>(d, msk, tmp);
+    dilate<<<grids, blocks, 0, stream>>>(d, tmp, msk);
+    erode<<<grids, blocks, 0, stream>>>(d, msk, tmp);
+    removeSmallHorzGaps<<<grids, blocks, 0, stream>>>(d, tmp, msk);
 
-      buildEdgeMask<<<grids, blocks, 0, stream>>>(d, src, msk);
-      erode<<<grids, blocks, 0, stream>>>(d, msk, tmp);
-      dilate<<<grids, blocks, 0, stream>>>(d, tmp, msk);
-      erode<<<grids, blocks, 0, stream>>>(d, msk, tmp);
-      removeSmallHorzGaps<<<grids, blocks, 0, stream>>>(d, tmp, msk);
+    if (map != 1) {
+      calcDirections<<<grids, blocks, 0, stream>>>(d, src, msk, tmp);
+      filterDirMap<<<grids, blocks, 0, stream>>>(d, msk, tmp, dst);
+      expandDirMap<<<grids, blocks, 0, stream>>>(d, msk, dst, tmp);
+      filterMap<<<grids, blocks, 0, stream>>>(d, msk, tmp, dst);
 
-      if (map != 1) {
-        calcDirections<<<grids, blocks, 0, stream>>>(d, src, msk, tmp);
-        filterDirMap<<<grids, blocks, 0, stream>>>(d, msk, tmp, dst);
-        expandDirMap<<<grids, blocks, 0, stream>>>(d, msk, dst, tmp);
-        filterMap<<<grids, blocks, 0, stream>>>(d, msk, tmp, dst);
+      if (map != 2) {
+        auto upscaleBy2 = [&](const T *src, T *dst) {
+          try_cuda(cudaMemcpy2DAsync(dst + d_pitch * (1 - field), d_pitch * 2, src, d_pitch, width_bytes, height, cudaMemcpyDeviceToDevice,
+                                     stream));
+        };
+        try_cuda(cudaMemset2DAsync(dst2, d_pitch, 0, width_bytes, height2x, stream));
+        try_cuda(cudaMemset2DAsync(tmp2, d_pitch, 255, width_bytes, height2x, stream));
+        upscaleBy2(src, dst2);
+        upscaleBy2(dst, tmp2_2);
+        upscaleBy2(msk, msk2);
 
-        if (map != 2) {
-          auto upscaleBy2 = [&](const T *src, T *dst) {
-            try_cuda(cudaMemcpy2DAsync(dst + d_pitch * (1 - field), d_pitch * 2, src, d_pitch, width_bytes, height,
-                                       cudaMemcpyDeviceToDevice, stream));
-          };
-          try_cuda(cudaMemset2DAsync(dst2, d_pitch, 0, width_bytes, height2x, stream));
-          try_cuda(cudaMemset2DAsync(tmp2, d_pitch, 255, width_bytes, height2x, stream));
-          upscaleBy2(src, dst2);
-          upscaleBy2(dst, tmp2_2);
-          upscaleBy2(msk, msk2);
+        markDirections2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2_2, tmp2);
+        filterDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2, dst2M);
+        expandDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, dst2M, tmp2);
+        fillGaps2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2, tmp2_3);
+        fillGaps2XStep2<<<grids, blocks, 0, stream>>>(d, msk2, tmp2, tmp2_3, dst2M);
+        fillGaps2X<<<grids, blocks, 0, stream>>>(d, msk2, dst2M, tmp2_3);
+        fillGaps2XStep2<<<grids, blocks, 0, stream>>>(d, msk2, dst2M, tmp2_3, tmp2);
 
-          markDirections2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2_2, tmp2);
-          filterDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2, dst2M);
-          expandDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, dst2M, tmp2);
-          fillGaps2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2, tmp2_3);
-          fillGaps2XStep2<<<grids, blocks, 0, stream>>>(d, msk2, tmp2, tmp2_3, dst2M);
-          fillGaps2X<<<grids, blocks, 0, stream>>>(d, msk2, dst2M, tmp2_3);
-          fillGaps2XStep2<<<grids, blocks, 0, stream>>>(d, msk2, dst2M, tmp2_3, tmp2);
+        if (map != 3) {
+          if (field)
+            try_cuda(cudaMemcpyAsync(dst2 + d_pitch / sizeof(T) * (height2x - 1), dst2 + d_pitch / sizeof(T) * (height2x - 2), width_bytes,
+                                     cudaMemcpyDeviceToDevice, stream));
+          else
+            try_cuda(cudaMemcpyAsync(dst2, dst2 + d_pitch / sizeof(T), width_bytes, cudaMemcpyDeviceToDevice, stream));
+          try_cuda(cudaMemcpy2DAsync(tmp2_3, d_pitch, tmp2, d_pitch, width_bytes, height2x, cudaMemcpyDeviceToDevice, stream));
 
-          if (map != 3) {
-            if (field)
-              try_cuda(cudaMemcpyAsync(dst2 + d_pitch / sizeof(T) * (height2x - 1), dst2 + d_pitch / sizeof(T) * (height2x - 2),
-                                       width_bytes, cudaMemcpyDeviceToDevice, stream));
-            else
-              try_cuda(cudaMemcpyAsync(dst2, dst2 + d_pitch / sizeof(T), width_bytes, cudaMemcpyDeviceToDevice, stream));
-            try_cuda(cudaMemcpy2DAsync(tmp2_3, d_pitch, tmp2, d_pitch, width_bytes, height2x, cudaMemcpyDeviceToDevice, stream));
+          interpolateLattice<<<grids, blocks, 0, stream>>>(d, tmp2_2, tmp2, dst2, tmp2_3);
 
-            interpolateLattice<<<grids, blocks, 0, stream>>>(d, tmp2_2, tmp2, dst2, tmp2_3);
-
-            if (pp == 1) {
-              filterDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2_3, dst2M);
-              expandDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, dst2M, tmp2);
-              postProcess<<<grids, blocks, 0, stream>>>(d, tmp2, tmp2_3, dst2);
-            } else if (pp != 0) {
-              throw std::runtime_error("currently only pp == 1 is supported");
-            }
+          if (pp == 1) {
+            filterDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2_3, dst2M);
+            expandDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, dst2M, tmp2);
+            postProcess<<<grids, blocks, 0, stream>>>(d, tmp2, tmp2_3, dst2);
+          } else if (pp != 0) {
+            throw std::runtime_error("currently only pp == 1 is supported");
           }
         }
       }
-
-      if (map == 0) {
-        d_dst = dst2;
-        dst_height = height2x;
-      } else if (map == 1) {
-        d_dst = msk;
-        dst_height = height;
-      } else if (map == 3) {
-        d_dst = tmp2;
-        dst_height = height2x;
-      } else {
-        d_dst = dst;
-        dst_height = height;
-      }
-      try_cuda(cudaMemcpy2DAsync(h_dst, d_pitch, d_dst, d_pitch, width_bytes, dst_height, cudaMemcpyDeviceToHost, stream));
-      try_cuda(cudaStreamSynchronize(stream));
-      try_cuda(cudaMemcpy2D(s_dst, s_pitch, h_dst, d_pitch, width_bytes, dst_height, cudaMemcpyHostToHost));
     }
-
-    return dst_frame.release();
   }
 };
 
 template <typename T> class EEDI2Pipeline {
   std::vector<std::unique_ptr<EEDI2Instance<T>>> steps;
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
+  const VSVideoInfo *vi;
+  cudaStream_t stream;
+  T *h_src, *h_dst;
 
 public:
   EEDI2Pipeline(const VSMap *in, const VSAPI *vsapi) : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
     using invalid_arg = std::invalid_argument;
 
-    const VSVideoInfo *vi = vsapi->getVideoInfo(node.get());
+    vi = vsapi->getVideoInfo(node.get());
     auto vi2 = std::make_unique<VSVideoInfo>(*vi);
     EEDI2Param d;
     const auto &fmt = *vi->format;
@@ -292,15 +259,25 @@ public:
     d.nt13 = nt * 13;
     d.nt19 = nt * 19;
 
-    steps.emplace_back(std::move(std::make_unique<EEDI2Instance<T>>(node.get(), vi, vi2.get(), d, map, pp, fieldS, d_pitch, vsapi)));
+    steps.emplace_back(std::make_unique<EEDI2Instance<T>>(node.get(), vi, vi2.get(), d, map, pp, fieldS, d_pitch, vsapi));
 
     steps.shrink_to_fit();
+
+    initCuda();
   }
 
-  EEDI2Pipeline(const EEDI2Pipeline &other, const VSAPI *vsapi) : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode) {
+  EEDI2Pipeline(const EEDI2Pipeline &other, const VSAPI *vsapi)
+      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi) {
     steps.reserve(other.steps.size());
     for (const auto &step : other.steps)
-      steps.emplace_back(std::move(std::make_unique<EEDI2Instance<T>>(*step, vsapi)));
+      steps.emplace_back(std::make_unique<EEDI2Instance<T>>(*step, vsapi));
+
+    initCuda();
+  }
+
+  ~EEDI2Pipeline() {
+    try_cuda(cudaFreeHost(h_src));
+    try_cuda(cudaFreeHost(h_dst));
   }
 
   const VSVideoInfo *getOutputVI() const { return steps.back()->getOutputVI(); }
@@ -312,10 +289,70 @@ public:
     } else if (activationReason != arAllFramesReady)
       return nullptr;
 
-    for (auto &step : steps)
-      return step->getFrame(n, frameCtx, core, vsapi);
+    auto vi2 = steps.back()->getOutputVI();
 
-    unreachable();
+    std::unique_ptr<const VSFrameRef, void (*const)(const VSFrameRef *)> src_frame{vsapi->getFrameFilter(n, node.get(), frameCtx),
+                                                                                   vsapi->freeFrame};
+    std::unique_ptr<VSFrameRef, void (*const)(const VSFrameRef *)> dst_frame{
+        vsapi->newVideoFrame(vi2->format, vi2->width, vi2->height, src_frame.get(), core), vsapi->freeFrame};
+
+    for (int plane = 0; plane < vi->format->numPlanes; ++plane) {
+      auto src_width = vsapi->getFrameWidth(src_frame.get(), plane);
+      auto src_height = vsapi->getFrameHeight(src_frame.get(), plane);
+      auto dst_width = vsapi->getFrameWidth(dst_frame.get(), plane);
+      auto dst_height = vsapi->getFrameHeight(dst_frame.get(), plane);
+      auto s_pitch_src = vsapi->getStride(src_frame.get(), plane);
+      auto s_pitch_dst = vsapi->getStride(dst_frame.get(), plane);
+      auto src_width_bytes = src_width * sizeof(T);
+      auto dst_width_bytes = dst_width * sizeof(T);
+      auto s_src = vsapi->getReadPtr(src_frame.get(), plane);
+      auto s_dst = vsapi->getWritePtr(dst_frame.get(), plane);
+      auto d_src = steps.front()->getSrcDevPtr();
+      auto d_dst = steps.back()->getDstDevPtr();
+      auto d_pitch_src = steps.front()->getSrcPitch() >> !!plane * vi->format->subSamplingW;
+      auto d_pitch_dst = steps.back()->getDstPitch() >> !!plane * vi2->format->subSamplingW;
+
+      // upload
+      vs_bitblt(h_src, d_pitch_src, s_src, s_pitch_src, src_width_bytes, src_height);
+      try_cuda(cudaMemcpy2DAsync(d_src, d_pitch_src, h_src, d_pitch_src, src_width_bytes, src_height, cudaMemcpyHostToDevice, stream));
+
+      // process
+      for (unsigned i = 0; i < steps.size(); ++i) {
+        auto &cur = *steps[i];
+        if (i) {
+          auto &last = *steps[i - 1];
+          auto last_vi = last.getOutputVI();
+          auto sw = !!plane * last_vi->format->subSamplingW;
+          auto sh = !!plane * last_vi->format->subSamplingH;
+          try_cuda(cudaMemcpy2DAsync(cur.getSrcDevPtr(), cur.getSrcPitch() >> sw, last.getDstDevPtr(), last.getDstPitch() >> sw,
+                                     last_vi->width * sizeof(T) >> sw, last_vi->height >> sh, cudaMemcpyDeviceToDevice, stream));
+        }
+        cur.process(n, plane, stream);
+      }
+
+      // download
+      try_cuda(cudaMemcpy2DAsync(h_dst, d_pitch_dst, d_dst, d_pitch_dst, dst_width_bytes, dst_height, cudaMemcpyDeviceToHost, stream));
+      try_cuda(cudaStreamSynchronize(stream));
+      vs_bitblt(s_dst, s_pitch_dst, h_dst, d_pitch_dst, dst_width_bytes, dst_height);
+    }
+
+    return dst_frame.release();
+  }
+
+private:
+  void initCuda() {
+    try {
+      try_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    } catch (const CUDAError &exc) {
+      throw CUDAError(exc.what() + " Please upgrade your driver."s);
+    }
+
+    auto d_pitch_src = steps.front()->getSrcPitch();
+    auto d_pitch_dst = steps.back()->getDstPitch();
+    auto src_height = vi->height;
+    auto dst_height = steps.back()->getOutputVI()->height;
+    try_cuda(cudaHostAlloc(&h_src, d_pitch_src * src_height, cudaHostAllocWriteCombined));
+    try_cuda(cudaHostAlloc(&h_dst, d_pitch_dst * dst_height, cudaHostAllocDefault));
   }
 };
 
