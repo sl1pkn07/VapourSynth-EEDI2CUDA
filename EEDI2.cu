@@ -41,7 +41,7 @@ struct EEDI2Param {
   int width, height;
 };
 
-template <typename T> class EEDI2Instance {
+template <typename T> class EEDI2Pass {
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
   const VSVideoInfo *vi;
   std::unique_ptr<VSVideoInfo> vi2;
@@ -54,20 +54,20 @@ template <typename T> class EEDI2Instance {
   unsigned d_pitch;
 
 public:
-  EEDI2Instance(const EEDI2Instance &other, const VSAPI *vsapi)
+  EEDI2Pass(const EEDI2Pass &other, const VSAPI *vsapi)
       : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi), vi2(std::make_unique<VSVideoInfo>(*other.vi2)),
         d(other.d), map(other.map), pp(other.pp), fieldS(other.fieldS), d_pitch(other.d_pitch) {
     initCuda();
   }
 
-  EEDI2Instance(VSNodeRef *node, const VSVideoInfo *vi, const VSVideoInfo *vi2, EEDI2Param d, unsigned map, unsigned pp, unsigned fieldS,
+  EEDI2Pass(VSNodeRef *node, const VSVideoInfo *vi, const VSVideoInfo *vi2, EEDI2Param d, unsigned map, unsigned pp, unsigned fieldS,
                 unsigned d_pitch, const VSAPI *vsapi)
       : node(vsapi->cloneNodeRef(node), vsapi->freeNode), vi(vi), vi2(std::make_unique<VSVideoInfo>(*vi2)), d(d), map(map), pp(pp),
         fieldS(fieldS), d_pitch(d_pitch) {
     initCuda();
   }
 
-  ~EEDI2Instance() {
+  ~EEDI2Pass() {
     try_cuda(cudaFree(dst));
     try_cuda(cudaFree(dst2));
   }
@@ -190,15 +190,15 @@ public:
   }
 };
 
-template <typename T> class EEDI2Pipeline {
-  std::vector<std::unique_ptr<EEDI2Instance<T>>> steps;
+template <typename T> class Pipeline {
+  std::vector<std::unique_ptr<EEDI2Pass<T>>> passes;
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
   const VSVideoInfo *vi;
   cudaStream_t stream;
   T *h_src, *h_dst;
 
 public:
-  EEDI2Pipeline(const VSMap *in, const VSAPI *vsapi) : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
+  Pipeline(const VSMap *in, const VSAPI *vsapi) : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
     using invalid_arg = std::invalid_argument;
 
     vi = vsapi->getVideoInfo(node.get());
@@ -257,28 +257,28 @@ public:
     d.nt13 = nt * 13;
     d.nt19 = nt * 19;
 
-    steps.emplace_back(std::make_unique<EEDI2Instance<T>>(node.get(), vi, vi2.get(), d, map, pp, fieldS, d_pitch, vsapi));
+    passes.emplace_back(std::make_unique<EEDI2Pass<T>>(node.get(), vi, vi2.get(), d, map, pp, fieldS, d_pitch, vsapi));
 
-    steps.shrink_to_fit();
+    passes.shrink_to_fit();
 
     initCuda();
   }
 
-  EEDI2Pipeline(const EEDI2Pipeline &other, const VSAPI *vsapi)
+  Pipeline(const Pipeline &other, const VSAPI *vsapi)
       : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi) {
-    steps.reserve(other.steps.size());
-    for (const auto &step : other.steps)
-      steps.emplace_back(std::make_unique<EEDI2Instance<T>>(*step, vsapi));
+    passes.reserve(other.passes.size());
+    for (const auto &step : other.passes)
+      passes.emplace_back(std::make_unique<EEDI2Pass<T>>(*step, vsapi));
 
     initCuda();
   }
 
-  ~EEDI2Pipeline() {
+  ~Pipeline() {
     try_cuda(cudaFreeHost(h_src));
     try_cuda(cudaFreeHost(h_dst));
   }
 
-  const VSVideoInfo *getOutputVI() const { return steps.back()->getOutputVI(); }
+  const VSVideoInfo *getOutputVI() const { return passes.back()->getOutputVI(); }
 
   VSFrameRef *getFrame(int n, int activationReason, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
     if (activationReason == arInitial) {
@@ -287,7 +287,7 @@ public:
     } else if (activationReason != arAllFramesReady)
       return nullptr;
 
-    auto vi2 = steps.back()->getOutputVI();
+    auto vi2 = passes.back()->getOutputVI();
 
     std::unique_ptr<const VSFrameRef, void (*const)(const VSFrameRef *)> src_frame{vsapi->getFrameFilter(n, node.get(), frameCtx),
                                                                                    vsapi->freeFrame};
@@ -305,20 +305,20 @@ public:
       auto dst_width_bytes = dst_width * sizeof(T);
       auto s_src = vsapi->getReadPtr(src_frame.get(), plane);
       auto s_dst = vsapi->getWritePtr(dst_frame.get(), plane);
-      auto d_src = steps.front()->getSrcDevPtr();
-      auto d_dst = steps.back()->getDstDevPtr();
-      auto d_pitch_src = steps.front()->getSrcPitch() >> !!plane * vi->format->subSamplingW;
-      auto d_pitch_dst = steps.back()->getDstPitch() >> !!plane * vi2->format->subSamplingW;
+      auto d_src = passes.front()->getSrcDevPtr();
+      auto d_dst = passes.back()->getDstDevPtr();
+      auto d_pitch_src = passes.front()->getSrcPitch() >> !!plane * vi->format->subSamplingW;
+      auto d_pitch_dst = passes.back()->getDstPitch() >> !!plane * vi2->format->subSamplingW;
 
       // upload
       vs_bitblt(h_src, d_pitch_src, s_src, s_pitch_src, src_width_bytes, src_height);
       try_cuda(cudaMemcpy2DAsync(d_src, d_pitch_src, h_src, d_pitch_src, src_width_bytes, src_height, cudaMemcpyHostToDevice, stream));
 
       // process
-      for (unsigned i = 0; i < steps.size(); ++i) {
-        auto &cur = *steps[i];
+      for (unsigned i = 0; i < passes.size(); ++i) {
+        auto &cur = *passes[i];
         if (i) {
-          auto &last = *steps[i - 1];
+          auto &last = *passes[i - 1];
           auto last_vi = last.getOutputVI();
           auto sw = !!plane * last_vi->format->subSamplingW;
           auto sh = !!plane * last_vi->format->subSamplingH;
@@ -345,47 +345,45 @@ private:
       throw CUDAError(exc.what() + " Please upgrade your driver."s);
     }
 
-    auto d_pitch_src = steps.front()->getSrcPitch();
-    auto d_pitch_dst = steps.back()->getDstPitch();
+    auto d_pitch_src = passes.front()->getSrcPitch();
+    auto d_pitch_dst = passes.back()->getDstPitch();
     auto src_height = vi->height;
-    auto dst_height = steps.back()->getOutputVI()->height;
+    auto dst_height = passes.back()->getOutputVI()->height;
     try_cuda(cudaHostAlloc(&h_src, d_pitch_src * src_height, cudaHostAllocWriteCombined));
     try_cuda(cudaHostAlloc(&h_dst, d_pitch_dst * dst_height, cudaHostAllocDefault));
   }
 };
 
-template <typename T> struct EEDI2Data {
-  using EEDI2Item = std::pair<EEDI2Pipeline<T>, std::atomic_flag>;
+template <typename T> class Instance {
+  using Item = std::pair<Pipeline<T>, std::atomic_flag>;
 
   unsigned num_streams;
-
-private:
   boost::sync::semaphore semaphore;
 
-  EEDI2Item *items() { return reinterpret_cast<EEDI2Item *>(this + 1); }
+  Item *items() { return reinterpret_cast<Item *>(this + 1); }
 
 public:
-  EEDI2Data(const VSMap *in, const VSAPI *vsapi) : semaphore(num_streams) {
+  Instance(const VSMap *in, const VSAPI *vsapi) : semaphore(num_streams) {
     auto items = this->items();
-    new (items) EEDI2Item(std::piecewise_construct, std::forward_as_tuple(in, vsapi), std::forward_as_tuple());
+    new (items) Item(std::piecewise_construct, std::forward_as_tuple(in, vsapi), std::forward_as_tuple());
     items[0].second.clear();
     for (unsigned i = 1; i < num_streams; ++i) {
-      new (items + i) EEDI2Item(std::piecewise_construct, std::forward_as_tuple(firstInstance(), vsapi), std::forward_as_tuple());
+      new (items + i) Item(std::piecewise_construct, std::forward_as_tuple(firstReactor(), vsapi), std::forward_as_tuple());
       items[i].second.clear();
     }
   }
 
-  ~EEDI2Data() {
+  ~Instance() {
     auto items = this->items();
     for (unsigned i = 0; i < num_streams; ++i)
-      items[i].~EEDI2Item();
+      items[i].~Item();
   }
 
-  EEDI2Pipeline<T> &firstInstance() { return items()[0].first; }
+  Pipeline<T> &firstReactor() { return items()[0].first; }
 
-  EEDI2Pipeline<T> &acquireInstance() {
+  Pipeline<T> &acquireReactor() {
     if (num_streams == 1)
-      return firstInstance();
+      return firstReactor();
     semaphore.wait();
     auto items = this->items();
     for (unsigned i = 0; i < num_streams; ++i) {
@@ -395,7 +393,7 @@ public:
     unreachable();
   }
 
-  void releaseInstance(const EEDI2Pipeline<T> &instance) {
+  void releaseReactor(const Pipeline<T> &instance) {
     if (num_streams == 1)
       return;
     auto items = this->items();
@@ -409,7 +407,7 @@ public:
   }
 
   static void *operator new(size_t sz, unsigned num_streams) {
-    auto p = static_cast<EEDI2Data *>(::operator new(sz + sizeof(EEDI2Item) * num_streams));
+    auto p = static_cast<Instance *>(::operator new(sz + sizeof(Item) * num_streams));
     p->num_streams = num_streams;
     return p;
   }
@@ -1315,34 +1313,34 @@ template <typename T> KERNEL void postProcess(const EEDI2Param d, const T *nmsk,
 }
 
 template <typename T> void VS_CC eedi2Init(VSMap *, VSMap *, void **instanceData, VSNode *node, VSCore *, const VSAPI *vsapi) {
-  auto data = static_cast<EEDI2Data<T> *>(*instanceData);
-  vsapi->setVideoInfo(data->firstInstance().getOutputVI(), 1, node);
+  auto data = static_cast<Instance<T> *>(*instanceData);
+  vsapi->setVideoInfo(data->firstReactor().getOutputVI(), 1, node);
 }
 
 template <typename T>
 const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason, void **instanceData, void **, VSFrameContext *frameCtx, VSCore *core,
                                       const VSAPI *vsapi) {
 
-  auto data = static_cast<EEDI2Data<T> *>(*instanceData);
+  auto data = static_cast<Instance<T> *>(*instanceData);
   const VSFrameRef *out = nullptr;
 
   if (activationReason == arInitial) {
-    out = data->firstInstance().getFrame(n, activationReason, frameCtx, core, vsapi);
+    out = data->firstReactor().getFrame(n, activationReason, frameCtx, core, vsapi);
   } else {
-    auto &d = data->acquireInstance();
+    auto &d = data->acquireReactor();
     try {
       out = d.getFrame(n, activationReason, frameCtx, core, vsapi);
     } catch (const std::exception &exc) {
       vsapi->setFilterError(("EEDI2CUDA: "s + exc.what()).c_str(), frameCtx);
     }
-    data->releaseInstance(d);
+    data->releaseReactor(d);
   }
 
   return out;
 }
 
 template <typename T> void VS_CC eedi2Free(void *instanceData, VSCore *, const VSAPI *) {
-  auto data = static_cast<EEDI2Data<T> *>(instanceData);
+  auto data = static_cast<Instance<T> *>(instanceData);
   delete data;
 }
 
@@ -1353,7 +1351,7 @@ template <typename T> void eedi2CreateInner(const VSMap *in, VSMap *out, const V
     numeric_cast_to(num_streams, vsapi->propGetInt(in, "num_streams", 0, &err));
     if (err)
       num_streams = 1;
-    auto data = new (num_streams) EEDI2Data<T>(in, vsapi);
+    auto data = new (num_streams) Instance<T>(in, vsapi);
     vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>, eedi2Free<T>, num_streams > 1 ? fmParallel : fmParallelRequests,
                         0, data, core);
   } catch (const std::exception &exc) {
