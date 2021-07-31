@@ -32,6 +32,8 @@ jobs:
     steps:
     - name: Checkout repo
       uses: actions/checkout@v2
+      with:
+        fetch-depth: 0
     - name: Download Boost
       uses: actions/download-artifact@v2
       with:
