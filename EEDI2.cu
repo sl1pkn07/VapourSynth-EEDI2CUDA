@@ -254,7 +254,7 @@ template <typename T> struct TransposePass final : public BridgePass<T> {
     auto width = vi.width >> sw;
     auto height = vi.height >> sh;
     dim3 blocks = dim3(64, 8);
-    dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
+    dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.x + 1);
     transpose<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src / sizeof(T) >> sw, d_pitch_dst / sizeof(T) >> sh);
   }
 };
@@ -1478,20 +1478,18 @@ __global__ void transpose(const T *src, T *dst, const int width, const int heigh
   int x = blockIdx.x * TILE_DIM + threadIdx.x;
   int y = blockIdx.y * TILE_DIM + threadIdx.y;
 
-  if (x < width)
-    for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
-      if (y + j < height)
-        tile[threadIdx.y + j][threadIdx.x] = src[(y + j) * src_stride + x];
+  for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
+    if (y + j < height)
+      tile[threadIdx.y + j][threadIdx.x] = src[(y + j) * src_stride + x];
 
   __syncthreads();
 
   x = blockIdx.y * TILE_DIM + threadIdx.x;
   y = blockIdx.x * TILE_DIM + threadIdx.y;
 
-  if (x < height)
-    for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
-      if (y + j < width)
-        dst[(y + j) * dst_stride + x] = tile[threadIdx.x][threadIdx.y + j];
+  for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
+    if (y + j < width)
+      dst[(y + j) * dst_stride + x] = tile[threadIdx.x][threadIdx.y + j];
 }
 
 template <typename T> KERNEL void resample12(const T *src, T *dst, int width, int height, unsigned d_pitch_src, unsigned d_pitch_dst) {
