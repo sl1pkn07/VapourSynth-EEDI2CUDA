@@ -257,11 +257,25 @@ template <typename T> struct TransposePass final : public BridgePass<T> {
     dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
     transpose<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src / sizeof(T) >> sw, d_pitch_dst / sizeof(T) >> sh);
   }
+};
 
-  void setSrcDevPtr(T *p) override { src = p; }
-  void setSrcPitch(unsigned p) override { d_pitch_src = p; }
-  void setDstDevPtr(T *p) override { dst = p; }
-  void setDstPitch(unsigned p) override { d_pitch_dst = p; }
+__constant__ float spline36_offset05_weights12[] = {0.005270634, 0.009531998, -0.031623804, -0.057191986, 0.134307715, 0.439705443,
+                                                    0.439705443, 0.134307715, -0.057191986, -0.031623804, 0.009531998, 0.005270634};
+
+template <typename T> struct ScaleDownWPass final : public BridgePass<T> {
+  using BridgePass<T>::BridgePass;
+
+  [[nodiscard]] Pass<T> *dup() const override { return new ScaleDownWPass(*this); }
+
+  void process(int, int plane, cudaStream_t stream) override {
+    auto sw = !!plane * vi.format->subSamplingW;
+    auto sh = !!plane * vi.format->subSamplingH;
+    auto width = vi.width >> sw;
+    auto height = vi.height >> sh;
+    dim3 blocks = dim3(64, 8);
+    dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
+    resample12<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src, d_pitch_dst);
+  }
 };
 
 template <typename T> class Pipeline {
@@ -342,11 +356,17 @@ public:
       std::swap(vi3.width, vi3.height); // XXX: this is correct for 420 & 444 only
       passes.emplace_back(std::make_unique<TransposePass<T>>(vi2, vi3));
       auto vi4 = vi3;
-      vi4.height *= 2;
-      passes.emplace_back(std::make_unique<EEDI2Pass<T>>(vi3, vi4, d, map, pp, fieldS));
+      vi4.width /= 2;
+      passes.emplace_back(std::make_unique<ScaleDownWPass<T>>(vi3, vi4));
       auto vi5 = vi4;
-      std::swap(vi5.width, vi5.height);
-      passes.emplace_back(std::make_unique<TransposePass<T>>(vi4, vi5));
+      vi5.height *= 2;
+      passes.emplace_back(std::make_unique<EEDI2Pass<T>>(vi4, vi5, d, map, pp, fieldS));
+      auto vi6 = vi5;
+      std::swap(vi6.width, vi6.height);
+      passes.emplace_back(std::make_unique<TransposePass<T>>(vi5, vi6));
+      auto vi7 = vi6;
+      vi7.width /= 2;
+      passes.emplace_back(std::make_unique<ScaleDownWPass<T>>(vi6, vi7));
     }
 
     passes.shrink_to_fit();
@@ -552,8 +572,12 @@ public:
 
 #define KERNEL __global__ __launch_bounds__(64)
 
+#define setup_xy int x = threadIdx.x + blockIdx.x * blockDim.x, y = threadIdx.y + blockIdx.y * blockDim.y
+
 #define setup_kernel                                                                                                                       \
-  int width = d.width, height = d.height, x = threadIdx.x + blockIdx.x * blockDim.x, y = threadIdx.y + blockIdx.y * blockDim.y;            \
+  setup_xy;                                                                                                                                \
+  int width = d.width, height = d.height;                                                                                                  \
+  auto pitch = d.d_pitch;                                                                                                                  \
   __assume(width > 0);                                                                                                                     \
   __assume(height > 0);                                                                                                                    \
   __assume(x >= 0);                                                                                                                        \
@@ -575,9 +599,9 @@ __device__ int limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12
   if ((value) < (lower) || (value) >= (upper))                                                                                             \
   return
 
-#define line(p) ((p) + (d.d_pitch / sizeof(T)) * y)
-#define lineOff(p, off) ((p) + int(d.d_pitch / sizeof(T)) * (y + (off)))
-#define point(p) ((p)[(d.d_pitch / sizeof(T)) * y + x])
+#define line(p) ((p) + (pitch / sizeof(T)) * y)
+#define lineOff(p, off) ((p) + int(pitch / sizeof(T)) * (y + (off)))
+#define point(p) ((p)[(pitch / sizeof(T)) * y + x])
 
 namespace bose {
 template <typename T, size_t I, size_t J> __device__ __forceinline__ void P(T *arr) {
@@ -1468,6 +1492,22 @@ __global__ void transpose(const T *src, T *dst, const int width, const int heigh
     for (int j = 0; j < TILE_DIM; j += BLOCK_ROWS)
       if (y + j < width)
         dst[(y + j) * dst_stride + x] = tile[threadIdx.x][threadIdx.y + j];
+}
+
+template <typename T> KERNEL void resample12(const T *src, T *dst, int width, int height, unsigned d_pitch_src, unsigned d_pitch_dst) {
+  setup_xy;
+
+  auto pitch = d_pitch_src;
+  auto srcp = line(src);
+  pitch = d_pitch_dst;
+  auto &out = point(dst);
+
+  auto c = 0.f;
+
+  for (int i = -6; i < 6; ++i)
+    c += spline36_offset05_weights12[i + 6] * srcp[mmin(mmax(i + x, 0), width - 1)];
+
+  out = __float2uint_rn(c);
 }
 
 template <typename T> void VS_CC eedi2Init(VSMap *, VSMap *, void **instanceData, VSNode *node, VSCore *, const VSAPI *vsapi) {
