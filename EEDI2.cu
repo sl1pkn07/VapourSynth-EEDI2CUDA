@@ -301,6 +301,7 @@ template <typename T> class Pipeline {
   std::vector<std::unique_ptr<Pass<T>>> passes;
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
   VSVideoInfo vi;
+  int device_id;
   cudaStream_t stream;
   T *h_src, *h_dst;
   std::vector<T *> fbs;
@@ -345,6 +346,8 @@ public:
 
     unsigned nt;
     numeric_cast_to(nt, propGetIntDefault("nt", 50));
+
+    numeric_cast_to(device_id, propGetIntDefault("device_id", 0));
 
     if (fieldS > 3)
       throw invalid_arg("field must be 0, 1, 2 or 3");
@@ -424,6 +427,8 @@ public:
       return nullptr;
     } else if (activationReason != arAllFramesReady)
       return nullptr;
+
+    try_cuda(cudaSetDevice(device_id));
 
     auto vi2 = passes.back()->getOutputVI();
 
@@ -1621,47 +1626,26 @@ void VS_CC AA2Create(const VSMap *in, VSMap *out, void *userData, VSCore *core, 
   return eedi2Create("AA2", in, out, userData, core, vsapi);
 }
 
+#define eedi2_common_params                                                                                                                \
+  "mthresh:int:opt;"                                                                                                                       \
+  "lthresh:int:opt;"                                                                                                                       \
+  "vthresh:int:opt;"                                                                                                                       \
+  "estr:int:opt;"                                                                                                                          \
+  "dstr:int:opt;"                                                                                                                          \
+  "maxd:int:opt;"                                                                                                                          \
+  "map:int:opt;"                                                                                                                           \
+  "nt:int:opt;"                                                                                                                            \
+  "pp:int:opt;"                                                                                                                            \
+  "num_streams:int:opt;"                                                                                                                   \
+  "device_id:int:opt"
+
 VS_EXTERNAL_API(void)
 VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
   configFunc("club.amusement.eedi2cuda", "eedi2cuda", "EEDI2 filter using CUDA", VAPOURSYNTH_API_VERSION, 1, plugin);
   registerFunc("EEDI2",
                "clip:clip;"
-               "field:int;"
-               "mthresh:int:opt;"
-               "lthresh:int:opt;"
-               "vthresh:int:opt;"
-               "estr:int:opt;"
-               "dstr:int:opt;"
-               "maxd:int:opt;"
-               "map:int:opt;"
-               "nt:int:opt;"
-               "pp:int:opt;"
-               "num_streams:int:opt",
+               "field:int;" eedi2_common_params,
                EEDI2Create, nullptr, plugin);
-  registerFunc("Enlarge2",
-               "clip:clip;"
-               "mthresh:int:opt;"
-               "lthresh:int:opt;"
-               "vthresh:int:opt;"
-               "estr:int:opt;"
-               "dstr:int:opt;"
-               "maxd:int:opt;"
-               "map:int:opt;"
-               "nt:int:opt;"
-               "pp:int:opt;"
-               "num_streams:int:opt",
-               Enlarge2Create, nullptr, plugin);
-  registerFunc("AA2",
-               "clip:clip;"
-               "mthresh:int:opt;"
-               "lthresh:int:opt;"
-               "vthresh:int:opt;"
-               "estr:int:opt;"
-               "dstr:int:opt;"
-               "maxd:int:opt;"
-               "map:int:opt;"
-               "nt:int:opt;"
-               "pp:int:opt;"
-               "num_streams:int:opt",
-               AA2Create, nullptr, plugin);
+  registerFunc("Enlarge2", "clip:clip;" eedi2_common_params, Enlarge2Create, nullptr, plugin);
+  registerFunc("AA2", "clip:clip;" eedi2_common_params, AA2Create, nullptr, plugin);
 }
