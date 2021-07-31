@@ -74,7 +74,7 @@ h = src16.height
 y = core.std.ShufflePlanes(src16, 0, vs.GRAY)
 y = core.eedi2cuda.Enlarge2(y)
 uv = core.resize.Point(src16, w * 2, h * 2,
-                       format=src16.format.replace(subsampling_w=0, subsampling_h=0),
+                       format=vs.YUV444P16,
                        resample_filter_uv="spline36")
 core.std.ShufflePlanes([y, uv], [0, 1, 2], vs.YUV).set_output()
 ```
