@@ -51,7 +51,8 @@ You can use eedi2cuda in mpv as the upscaler for realtime playback.
 First ensure the VapourSynth video filter is available in mpv.
 Then copy the script below and save it as `eedi2enlarge.vpy`:
 ```python3
-video_in.eedi2cuda.Enlarge2().set_output()
+src16 = video_in.resize.Point(format=video_in.format.replace(bits_per_sample=16))
+src16.eedi2cuda.Enlarge2().set_output()
 ```
 
 In commandline option, load the script:
@@ -60,6 +61,23 @@ mpv --vf=vapoursynth=eedi2enlarge.vpy
 ```
 
 Or you can specify it in `mpv.conf`.
+
+In most scenarios, it is not necessary to use an advanced upscaler for UV planes.
+The script below does per-plane upscaling:
+```python3
+import vapoursynth as vs
+from vapoursynth import core
+
+src16 = video_in.resize.Point(format=video_in.format.replace(bits_per_sample=16))
+w = src16.width
+h = src16.height
+y = core.std.ShufflePlanes(src16, 0, vs.GRAY)
+y = core.eedi2cuda.Enlarge2(y)
+uv = core.resize.Point(src16, w * 2, h * 2,
+                       format=src16.format.replace(subsampling_w=0, subsampling_h=0),
+                       resample_filter_uv="spline36")
+core.std.ShufflePlanes([y, uv], [0, 1, 2], vs.YUV).set_output()
+```
 
 ## Requirements
 - A CUDA-enabled GPU of compute capability 5.0 or higher (Maxwell+).
