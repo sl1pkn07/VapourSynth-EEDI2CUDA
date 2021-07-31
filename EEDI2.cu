@@ -270,7 +270,7 @@ template <typename T> class Pipeline {
   VSVideoInfo vi;
   cudaStream_t stream;
   T *h_src, *h_dst;
-  T *fb_d_src = nullptr, *fb_d_dst = nullptr;
+  std::vector<T *> fbs;
 
 public:
   Pipeline(std::string_view filterName, const VSMap *in, const VSAPI *vsapi)
@@ -365,8 +365,8 @@ public:
   ~Pipeline() {
     try_cuda(cudaFreeHost(h_src));
     try_cuda(cudaFreeHost(h_dst));
-    try_cuda(cudaFree(fb_d_src));
-    try_cuda(cudaFree(fb_d_dst));
+    for (auto fb : fbs)
+      try_cuda(cudaFree(fb));
   }
 
   const VSVideoInfo &getOutputVI() const { return passes.back()->getOutputVI(); }
@@ -422,6 +422,17 @@ public:
             cur.setDstDevPtr(next.getSrcDevPtr());
             cur.setDstPitch(next.getSrcPitch());
           }
+          if (!cur.getDstDevPtr()) {
+            auto vi = cur.getOutputVI();
+            size_t pitch;
+            T *fb;
+            try_cuda(cudaMallocPitch(&fb, &pitch, vi.width * sizeof(T), vi.height));
+            cur.setDstDevPtr(fb);
+            next.setSrcDevPtr(fb);
+            cur.setDstPitch(static_cast<unsigned>(pitch));
+            next.setSrcPitch(static_cast<unsigned>(pitch));
+            fbs.push_back(fb);
+          }
           auto curPtr = cur.getSrcDevPtr();
           auto lastPtr = last.getDstDevPtr();
           if (curPtr != lastPtr)
@@ -450,17 +461,21 @@ private:
 
     if (auto &firstStep = *passes.front(); !firstStep.getSrcDevPtr()) {
       size_t pitch;
+      T *fb_d_src;
       try_cuda(cudaMallocPitch(&fb_d_src, &pitch, vi.width * sizeof(T), vi.height));
       firstStep.setSrcDevPtr(fb_d_src);
       firstStep.setSrcPitch(static_cast<unsigned>(pitch));
+      fbs.push_back(fb_d_src);
     }
 
     if (auto &lastStep = *passes.back(); !lastStep.getDstDevPtr()) {
       auto vi2 = lastStep.getOutputVI();
       size_t pitch;
+      T *fb_d_dst;
       try_cuda(cudaMallocPitch(&fb_d_dst, &pitch, vi2.width * sizeof(T), vi2.height));
       lastStep.setDstDevPtr(fb_d_dst);
       lastStep.setDstPitch(static_cast<unsigned>(pitch));
+      fbs.push_back(fb_d_dst);
     }
 
     auto d_pitch_src = passes.front()->getSrcPitch();
