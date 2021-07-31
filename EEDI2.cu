@@ -349,7 +349,7 @@ public:
     unsigned nt;
     numeric_cast_to(nt, propGetIntDefault("nt", 50));
 
-    numeric_cast_to(device_id, propGetIntDefault("device_id", 0));
+    numeric_cast_to(device_id, propGetIntDefault("device_id", -1));
 
     if (fieldS > 3)
       throw invalid_arg("field must be 0, 1, 2 or 3");
@@ -406,7 +406,8 @@ public:
     initCuda();
   }
 
-  Pipeline(const Pipeline &other, const VSAPI *vsapi) : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi) {
+  Pipeline(const Pipeline &other, const VSAPI *vsapi)
+      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi), device_id(other.device_id) {
     passes.reserve(other.passes.size());
     for (const auto &step : other.passes)
       passes.emplace_back(std::unique_ptr<Pass<T>>(step->dup()));
@@ -430,7 +431,8 @@ public:
     } else if (activationReason != arAllFramesReady)
       return nullptr;
 
-    try_cuda(cudaSetDevice(device_id));
+    if (device_id != -1)
+      try_cuda(cudaSetDevice(device_id));
 
     auto vi2 = passes.back()->getOutputVI();
 
