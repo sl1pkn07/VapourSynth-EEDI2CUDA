@@ -263,6 +263,8 @@ __constant__ float spline36_offset00_weights12[] = {9.8684211e-03f,  0.0000000e+
                                                     2.9934211e-01f,  5.0000000e-01f, 2.9934211e-01f,  0.0000000e+00f,
                                                     -5.9210526e-02f, 0.0000000e+00f, 9.8684211e-03f,  -6.9388939e-18f};
 
+__constant__ float spline36_offset05_weights6[] = {0.019736842f, -0.118421053f, 0.598684211f, 0.598684211f, -0.118421053f, 0.019736842f};
+
 template <typename T> struct ScaleDownWPass final : public BridgePass<T> {
   using BridgePass<T>::BridgePass;
 
@@ -276,6 +278,22 @@ template <typename T> struct ScaleDownWPass final : public BridgePass<T> {
     dim3 blocks = dim3(64, 8);
     dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
     resample12<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src >> sw, d_pitch_dst >> sw);
+  }
+};
+
+template <typename T> struct ShiftWPass final : public BridgePass<T> {
+  using BridgePass<T>::BridgePass;
+
+  [[nodiscard]] Pass<T> *dup() const override { return new ShiftWPass(*this); }
+
+  void process(int, int plane, cudaStream_t stream) override {
+    auto sw = !!plane * vi.format->subSamplingW;
+    auto sh = !!plane * vi.format->subSamplingH;
+    auto width = vi.width >> sw;
+    auto height = vi.height >> sh;
+    dim3 blocks = dim3(64, 8);
+    dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
+    resample6<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src >> sw, d_pitch_dst >> sw);
   }
 };
 
@@ -357,8 +375,12 @@ public:
       std::swap(vi3.width, vi3.height); // XXX: this is correct for 420 & 444 only
       passes.emplace_back(std::make_unique<TransposePass<T>>(vi2, vi3));
       auto vi4 = vi3;
-      vi4.width /= 2;
-      passes.emplace_back(std::make_unique<ScaleDownWPass<T>>(vi3, vi4));
+      if (filterName == "AA2") {
+        vi4.width /= 2;
+        passes.emplace_back(std::make_unique<ScaleDownWPass<T>>(vi3, vi4));
+      } else {
+        passes.emplace_back(std::make_unique<ShiftWPass<T>>(vi3, vi4));
+      }
       auto vi5 = vi4;
       vi5.height *= 2;
       passes.emplace_back(std::make_unique<EEDI2Pass<T>>(vi4, vi5, d, map, pp, fieldS));
@@ -366,8 +388,12 @@ public:
       std::swap(vi6.width, vi6.height);
       passes.emplace_back(std::make_unique<TransposePass<T>>(vi5, vi6));
       auto vi7 = vi6;
-      vi7.width /= 2;
-      passes.emplace_back(std::make_unique<ScaleDownWPass<T>>(vi6, vi7));
+      if (filterName == "AA2") {
+        vi7.width /= 2;
+        passes.emplace_back(std::make_unique<ScaleDownWPass<T>>(vi6, vi7));
+      } else {
+        passes.emplace_back(std::make_unique<ShiftWPass<T>>(vi6, vi7));
+      }
     }
 
     passes.shrink_to_fit();
@@ -1509,6 +1535,22 @@ template <typename T> __global__ void resample12(const T *src, T *dst, int width
   out = __float2uint_rn(c);
 }
 
+template <typename T> __global__ void resample6(const T *src, T *dst, int width, int height, unsigned d_pitch_src, unsigned d_pitch_dst) {
+  setup_xy;
+
+  auto pitch = d_pitch_src;
+  auto srcp = line(src);
+  pitch = d_pitch_dst;
+  auto &out = point(dst);
+
+  auto c = 0.f;
+
+  for (int i = -3; i < 3; ++i)
+    c += spline36_offset05_weights6[i + 3] * srcp[mmin(mmax(i + x, 0), width - 1)];
+
+  out = __float2uint_rn(c);
+}
+
 template <typename T> void VS_CC eedi2Init(VSMap *, VSMap *, void **instanceData, VSNode *node, VSCore *, const VSAPI *vsapi) {
   auto data = static_cast<Instance<T> *>(*instanceData);
   vsapi->setVideoInfo(&data->firstReactor().getOutputVI(), 1, node);
@@ -1575,6 +1617,10 @@ void VS_CC Enlarge2Create(const VSMap *in, VSMap *out, void *userData, VSCore *c
   return eedi2Create("Enlarge2", in, out, userData, core, vsapi);
 }
 
+void VS_CC AA2Create(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
+  return eedi2Create("AA2", in, out, userData, core, vsapi);
+}
+
 VS_EXTERNAL_API(void)
 VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
   configFunc("club.amusement.eedi2cuda", "eedi2cuda", "EEDI2 filter using CUDA", VAPOURSYNTH_API_VERSION, 1, plugin);
@@ -1605,4 +1651,17 @@ VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc
                "pp:int:opt;"
                "num_streams:int:opt",
                Enlarge2Create, nullptr, plugin);
+  registerFunc("AA2",
+               "clip:clip;"
+               "mthresh:int:opt;"
+               "lthresh:int:opt;"
+               "vthresh:int:opt;"
+               "estr:int:opt;"
+               "dstr:int:opt;"
+               "maxd:int:opt;"
+               "map:int:opt;"
+               "nt:int:opt;"
+               "pp:int:opt;"
+               "num_streams:int:opt",
+               AA2Create, nullptr, plugin);
 }
