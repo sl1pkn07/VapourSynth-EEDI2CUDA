@@ -259,8 +259,9 @@ template <typename T> struct TransposePass final : public BridgePass<T> {
   }
 };
 
-__constant__ float spline36_offset05_weights12[] = {0.005270634, 0.009531998, -0.031623804, -0.057191986, 0.134307715, 0.439705443,
-                                                    0.439705443, 0.134307715, -0.057191986, -0.031623804, 0.009531998, 0.005270634};
+__constant__ float spline36_offset00_weights12[] = {9.8684211e-03f,  0.0000000e+00f, -5.9210526e-02f, 0.0000000e+00f,
+                                                    2.9934211e-01f,  5.0000000e-01f, 2.9934211e-01f,  0.0000000e+00f,
+                                                    -5.9210526e-02f, 0.0000000e+00f, 9.8684211e-03f,  -6.9388939e-18f};
 
 template <typename T> struct ScaleDownWPass final : public BridgePass<T> {
   using BridgePass<T>::BridgePass;
@@ -270,11 +271,11 @@ template <typename T> struct ScaleDownWPass final : public BridgePass<T> {
   void process(int, int plane, cudaStream_t stream) override {
     auto sw = !!plane * vi.format->subSamplingW;
     auto sh = !!plane * vi.format->subSamplingH;
-    auto width = vi.width >> sw;
-    auto height = vi.height >> sh;
+    auto width = vi2.width >> sw;
+    auto height = vi2.height >> sh;
     dim3 blocks = dim3(64, 8);
     dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
-    resample12<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src, d_pitch_dst);
+    resample12<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src >> sw, d_pitch_dst >> sw);
   }
 };
 
@@ -1492,7 +1493,7 @@ __global__ void transpose(const T *src, T *dst, const int width, const int heigh
       dst[(y + j) * dst_stride + x] = tile[threadIdx.x][threadIdx.y + j];
 }
 
-template <typename T> KERNEL void resample12(const T *src, T *dst, int width, int height, unsigned d_pitch_src, unsigned d_pitch_dst) {
+template <typename T> __global__ void resample12(const T *src, T *dst, int width, int height, unsigned d_pitch_src, unsigned d_pitch_dst) {
   setup_xy;
 
   auto pitch = d_pitch_src;
@@ -1502,8 +1503,8 @@ template <typename T> KERNEL void resample12(const T *src, T *dst, int width, in
 
   auto c = 0.f;
 
-  for (int i = -6; i < 6; ++i)
-    c += spline36_offset05_weights12[i + 6] * srcp[mmin(mmax(i + x, 0), width - 1)];
+  for (int i = -5; i <= 6; ++i)
+    c += spline36_offset00_weights12[i + 5] * srcp[mmin(mmax(i + x * 2, 0), width * 2 - 1)];
 
   out = __float2uint_rn(c);
 }
