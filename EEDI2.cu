@@ -31,6 +31,8 @@
 #include <VSHelper.h>
 #include <VapourSynth.h>
 
+#include "config.h"
+
 using namespace std::literals::string_literals;
 
 class CUDAError : public std::runtime_error {
@@ -1626,6 +1628,12 @@ void VS_CC AA2Create(const VSMap *in, VSMap *out, void *userData, VSCore *core, 
   return eedi2Create("AA2", in, out, userData, core, vsapi);
 }
 
+void VS_CC BuildConfigCreate(const VSMap *, VSMap *out, void *, VSCore *, const VSAPI *vsapi) {
+  vsapi->propSetData(out, "version", VERSION, -1, paAppend);
+  vsapi->propSetData(out, "options", BUILD_OPTIONS, -1, paAppend);
+  vsapi->propSetData(out, "timestamp", CONFIGURE_TIME, -1, paAppend);
+}
+
 #define eedi2_common_params                                                                                                                \
   "mthresh:int:opt;"                                                                                                                       \
   "lthresh:int:opt;"                                                                                                                       \
@@ -1648,4 +1656,5 @@ VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc
                EEDI2Create, nullptr, plugin);
   registerFunc("Enlarge2", "clip:clip;" eedi2_common_params, Enlarge2Create, nullptr, plugin);
   registerFunc("AA2", "clip:clip;" eedi2_common_params, AA2Create, nullptr, plugin);
+  registerFunc("BuildConfig", "", BuildConfigCreate, nullptr, plugin);
 }

@@ -1,0 +1,5 @@
+#pragma once
+
+#define VERSION "@VCS_TAG@"
+#define BUILD_OPTIONS "@BUILD_OPTIONS@"
+#define CONFIGURE_TIME "@CONFIGURE_TIME@"
