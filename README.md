@@ -1,11 +1,5 @@
 # VapourSynth-EEDI2CUDA
 
-Copyright (C) 2005-2006 Kevin Stone
-
-Copyright (C) 2014-2019 HolyWu
-
-Copyright (C) 2021 Misaki Kasumi
-
 EEDI2 filter using CUDA
 
 Ported from [HolyWu's plugin](https://github.com/HomeOfVapourSynthEvolution/VapourSynth-EEDI2). See usage there.
