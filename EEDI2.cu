@@ -51,10 +51,10 @@ template <typename Td, typename Ts> void narrow_cast_to(Td &dst, Ts src) { dst =
 
 template <typename T> struct Pass {
   virtual ~Pass() = default;
-  virtual T *getSrcDevPtr() = 0;
-  virtual unsigned getSrcPitch() = 0;
-  virtual const T *getDstDevPtr() const = 0;
-  virtual unsigned getDstPitch() = 0;
+  virtual T *getSrcDevPtr() { throw std::logic_error("not implemented"); }
+  virtual unsigned getSrcPitch() { throw std::logic_error("not implemented"); }
+  virtual const T *getDstDevPtr() const { throw std::logic_error("not implemented"); }
+  virtual unsigned getDstPitch() { throw std::logic_error("not implemented"); }
   virtual void process(int n, int plane, cudaStream_t stream) = 0;
   [[nodiscard]] virtual Pass *dup() const = 0;
 
@@ -225,19 +225,28 @@ public:
   }
 };
 
-template <typename T> class TransposePass final : public Pass<T> {
+template <typename T> struct BridgePass : public Pass<T> {
+  using Pass<T>::Pass;
+
+protected:
   T *src = nullptr, *dst = nullptr;
   unsigned d_pitch_src, d_pitch_dst;
 
 public:
-  TransposePass(const VSVideoInfo &vi, const VSVideoInfo &vi2) : Pass<T>(vi, vi2) {}
+  void setSrcDevPtr(T *p) final { src = p; }
+  void setSrcPitch(unsigned p) final { d_pitch_src = p; }
+  void setDstDevPtr(T *p) final { dst = p; }
+  void setDstPitch(unsigned p) final { d_pitch_dst = p; }
+  T *getSrcDevPtr() final { return src; }
+  unsigned getSrcPitch() final { return d_pitch_src; }
+  const T *getDstDevPtr() const final { return dst; }
+  unsigned getDstPitch() final { return d_pitch_dst; }
+};
+
+template <typename T> struct TransposePass final : public BridgePass<T> {
+  using BridgePass<T>::BridgePass;
 
   [[nodiscard]] Pass<T> *dup() const override { return new TransposePass(*this); }
-
-  T *getSrcDevPtr() override { return src; }
-  unsigned getSrcPitch() override { return d_pitch_src; }
-  const T *getDstDevPtr() const override { return dst; }
-  unsigned getDstPitch() override { return d_pitch_dst; }
 
   void process(int, int plane, cudaStream_t stream) override {
     auto sw = !!plane * vi.format->subSamplingW;
