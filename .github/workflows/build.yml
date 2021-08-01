@@ -72,3 +72,4 @@ jobs:
       if: startsWith(github.ref, 'refs/tags/')
       with:
         files: build/EEDI2CUDA-win64.zip
+        draft: true
