@@ -215,8 +215,6 @@ public:
             filterDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, tmp2_3, dst2M);
             expandDirMap2X<<<grids, blocks, 0, stream>>>(d, msk2, dst2M, tmp2);
             postProcess<<<grids, blocks, 0, stream>>>(d, tmp2, tmp2_3, dst2);
-          } else if (pp != 0) {
-            throw std::runtime_error("currently only pp == 1 is supported");
           }
         }
       }
@@ -356,8 +354,8 @@ public:
       throw invalid_arg("maxd must be between 1 and 29 (inclusive)");
     if (map > 3)
       throw invalid_arg("map must be 0, 1, 2 or 3");
-    if (pp > 3)
-      throw invalid_arg("pp must be 0, 1, 2 or 3");
+    if (pp > 1)
+      throw invalid_arg("only pp=0 or 1 is implemented");
 
     if (map == 0 || map == 3)
       vi2.height *= 2;
