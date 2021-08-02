@@ -95,7 +95,7 @@ template <typename T> class EEDI2Pass final : public Pass<T> {
 public:
   EEDI2Pass(const EEDI2Pass &other) : Pass<T>(other), d(other.d), map(other.map), pp(other.pp), fieldS(other.fieldS) { initCuda(); }
 
-  EEDI2Pass(const VSVideoInfo &vi, const VSVideoInfo &vi2, EEDI2Param d, unsigned map, unsigned pp, unsigned fieldS)
+  EEDI2Pass(const VSVideoInfo &vi, const VSVideoInfo &vi2, const EEDI2Param &d, unsigned map, unsigned pp, unsigned fieldS)
       : Pass<T>(vi, vi2), d(d), map(map), pp(pp), fieldS(fieldS) {
     initCuda();
   }
