@@ -1598,7 +1598,7 @@ template <typename T> void eedi2CreateInner(std::string_view filterName, const V
     unsigned num_streams;
     numeric_cast_to(num_streams, vsapi->propGetInt(in, "num_streams", 0, &err));
     if (err)
-      num_streams = 1;
+      num_streams = 4;
     auto data = new (num_streams) Instance<T>(filterName, in, vsapi);
     vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>, eedi2Free<T>, num_streams > 1 ? fmParallel : fmParallelRequests,
                         0, data, core);
