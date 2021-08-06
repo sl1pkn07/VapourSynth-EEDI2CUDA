@@ -1528,6 +1528,11 @@ __global__ void transpose(const T *src, T *dst, const int width, const int heigh
       dst[(y + j) * dst_stride + x] = tile[threadIdx.x][threadIdx.y + j];
 }
 
+template <typename T> __device__ T value_bound(int val) {
+  constexpr int peak = std::numeric_limits<T>::max();
+  return static_cast<T>(mmax(mmin(val, peak), 0));
+}
+
 template <typename T> __global__ void resample12(const T *src, T *dst, int width, int height, unsigned d_pitch_src, unsigned d_pitch_dst) {
   setup_xy;
 
@@ -1541,7 +1546,7 @@ template <typename T> __global__ void resample12(const T *src, T *dst, int width
   for (int i = -5; i <= 6; ++i)
     c += spline36_offset00_weights12[i + 5] * srcp[mmin(mmax(i + x * 2, 0), width * 2 - 1)];
 
-  out = __float2uint_rn(c);
+  out = value_bound<T>(__float2int_rn(c));
 }
 
 template <typename T> __global__ void resample6(const T *src, T *dst, int width, int height, unsigned d_pitch_src, unsigned d_pitch_dst) {
@@ -1557,7 +1562,7 @@ template <typename T> __global__ void resample6(const T *src, T *dst, int width,
   for (int i = -3; i < 3; ++i)
     c += spline36_offset05_weights6[i + 3] * srcp[mmin(mmax(i + x, 0), width - 1)];
 
-  out = __float2uint_rn(c);
+  out = value_bound<T>(__float2int_rn(c));
 }
 
 template <typename T> void VS_CC eedi2Init(VSMap *, VSMap *, void **instanceData, VSNode *node, VSCore *, const VSAPI *vsapi) {
