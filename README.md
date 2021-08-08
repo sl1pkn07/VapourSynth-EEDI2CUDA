@@ -7,17 +7,17 @@ Ported from [HolyWu's plugin](https://github.com/HomeOfVapourSynthEvolution/Vapo
 ## Usage
 
 ### Doubling Height
-`eedi2cuda.EEDI2(clip clip, int field[, int mthresh=10, int lthresh=20, int vthresh=20, int estr=2, int dstr=4, int maxd=24, int map=0, int nt=50, int pp=1, int num_streams=4, int device_id=-1])`
+`eedi2cuda.EEDI2(clip clip, int field[, int mthresh=10, int lthresh=20, int vthresh=20, int estr=2, int dstr=4, int maxd=24, int map=0, int nt=50, int pp=1, int num_streams=1, int device_id=-1])`
 
 Arguments have the exactly same meanings with the ones of [Holy's EEDI2](https://github.com/HomeOfVapourSynthEvolution/VapourSynth-EEDI2). See descriptions there.
 Only `pp=1` is implemented.
 
 Additional arguments:
-- `num_streams`: specify the number of CUDA streams. The value must less than or equal to `core.num_threads`. A larger value increases the concurrency and also increases the GPU memory usage.
+- `num_streams`: specify the number of CUDA streams. The value must less than or equal to `core.num_threads`. A larger value increases the concurrency and also increases the GPU memory usage. The default value `num_streams=1` is already fast enough.
 - `device_id`: set the GPU device ID to use. You *must* specify this argument for each call if you have multiple GPUs.
 
 ### Enlarge 2X
-`eedi2cuda.Enlarge2(clip clip[, int mthresh=10, int lthresh=20, int vthresh=20, int estr=2, int dstr=4, int maxd=24, int map=0, int nt=50, int pp=1, int num_streams=4, int device_id=-1])`
+`eedi2cuda.Enlarge2(clip clip[, int mthresh=10, int lthresh=20, int vthresh=20, int estr=2, int dstr=4, int maxd=24, int map=0, int nt=50, int pp=1, int num_streams=1, int device_id=-1])`
 
 Enlarge the clip by 2. Offsets caused by doubling are neutralized. This can be considered as a faster equivalent of the code below:
 ```python3
@@ -30,7 +30,7 @@ el = core.std.Transpose(el)
 ```
 
 ### Anti-aliasing
-`eedi2cuda.AA2(clip clip[, int mthresh=10, int lthresh=20, int vthresh=20, int estr=2, int dstr=4, int maxd=24, int map=0, int nt=50, int pp=1, int num_streams=4, int device_id=-1])`
+`eedi2cuda.AA2(clip clip[, int mthresh=10, int lthresh=20, int vthresh=20, int estr=2, int dstr=4, int maxd=24, int map=0, int nt=50, int pp=1, int num_streams=1, int device_id=-1])`
 
 Double and then scale back to do anti-aliasing. Offsets caused by doubling are neutralized. This can be considered as a faster equivalent of the code below:
 ```python3
