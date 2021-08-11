@@ -93,10 +93,7 @@ template <typename T> class EEDI2Pass final : public Pass<T> {
   unsigned d_pitch;
 
 public:
-  EEDI2Pass(const EEDI2Pass &other)
-      : Pass<T>(other), d(other.d), map(other.map), pp(other.pp), fieldS(other.fieldS), d_pitch(other.d_pitch) {
-    initCuda();
-  }
+  EEDI2Pass(const EEDI2Pass &other) : Pass<T>(other), d(other.d), map(other.map), pp(other.pp), fieldS(other.fieldS) { initCuda(); }
 
   EEDI2Pass(const VSVideoInfo &vi, const VSVideoInfo &vi2, EEDI2Param d, unsigned map, unsigned pp, unsigned fieldS)
       : Pass<T>(vi, vi2), d(d), map(map), pp(pp), fieldS(fieldS) {
@@ -229,6 +226,8 @@ public:
 
 template <typename T> struct BridgePass : public Pass<T> {
   using Pass<T>::Pass;
+
+  BridgePass(const BridgePass &other) : Pass<T>(other) {}
 
 protected:
   T *src = nullptr, *dst = nullptr;
