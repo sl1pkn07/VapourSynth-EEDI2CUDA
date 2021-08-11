@@ -373,31 +373,31 @@ public:
     d.nt13 = nt * 13;
     d.nt19 = nt * 19;
 
-    passes.emplace_back(std::make_unique<EEDI2Pass<T>>(vi, vi2, d, map, pp, fieldS));
+    passes.emplace_back(new EEDI2Pass<T>(vi, vi2, d, map, pp, fieldS));
 
     if (filterName != "EEDI2") {
       auto vi3 = vi2;
       std::swap(vi3.width, vi3.height); // XXX: this is correct for 420 & 444 only
-      passes.emplace_back(std::make_unique<TransposePass<T>>(vi2, vi3));
+      passes.emplace_back(new TransposePass<T>(vi2, vi3));
       auto vi4 = vi3;
       if (filterName == "AA2") {
         vi4.width /= 2;
-        passes.emplace_back(std::make_unique<ScaleDownWPass<T>>(vi3, vi4));
+        passes.emplace_back(new ScaleDownWPass<T>(vi3, vi4));
       } else {
-        passes.emplace_back(std::make_unique<ShiftWPass<T>>(vi3, vi4));
+        passes.emplace_back(new ShiftWPass<T>(vi3, vi4));
       }
       auto vi5 = vi4;
       vi5.height *= 2;
-      passes.emplace_back(std::make_unique<EEDI2Pass<T>>(vi4, vi5, d, map, pp, fieldS));
+      passes.emplace_back(new EEDI2Pass<T>(vi4, vi5, d, map, pp, fieldS));
       auto vi6 = vi5;
       std::swap(vi6.width, vi6.height);
-      passes.emplace_back(std::make_unique<TransposePass<T>>(vi5, vi6));
+      passes.emplace_back(new TransposePass<T>(vi5, vi6));
       auto vi7 = vi6;
       if (filterName == "AA2") {
         vi7.width /= 2;
-        passes.emplace_back(std::make_unique<ScaleDownWPass<T>>(vi6, vi7));
+        passes.emplace_back(new ScaleDownWPass<T>(vi6, vi7));
       } else {
-        passes.emplace_back(std::make_unique<ShiftWPass<T>>(vi6, vi7));
+        passes.emplace_back(new ShiftWPass<T>(vi6, vi7));
       }
     }
 
@@ -410,7 +410,7 @@ public:
       : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi), device_id(other.device_id) {
     passes.reserve(other.passes.size());
     for (const auto &step : other.passes)
-      passes.emplace_back(std::unique_ptr<Pass<T>>(step->dup()));
+      passes.emplace_back(step->dup());
 
     initCuda();
   }
