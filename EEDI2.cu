@@ -1612,7 +1612,8 @@ template <typename T> void eedi2CreateInner(std::string_view filterName, const V
   }
 }
 
-void eedi2Create(std::string_view filterName, const VSMap *in, VSMap *out, void *, VSCore *core, const VSAPI *vsapi) {
+void eedi2Create(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
+  std::string_view filterName{static_cast<const char *>(userData)};
   VSNodeRef *node = vsapi->propGetNode(in, "clip", 0, nullptr);
   const VSVideoInfo *vi = vsapi->getVideoInfo(node);
   vsapi->freeNode(node);
@@ -1622,22 +1623,11 @@ void eedi2Create(std::string_view filterName, const VSMap *in, VSMap *out, void 
     eedi2CreateInner<uint16_t>(filterName, in, out, vsapi, core);
 }
 
-void VS_CC EEDI2Create(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
-  return eedi2Create("EEDI2", in, out, userData, core, vsapi);
-}
-
-void VS_CC Enlarge2Create(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
-  return eedi2Create("Enlarge2", in, out, userData, core, vsapi);
-}
-
-void VS_CC AA2Create(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
-  return eedi2Create("AA2", in, out, userData, core, vsapi);
-}
-
 void VS_CC BuildConfigCreate(const VSMap *, VSMap *out, void *, VSCore *, const VSAPI *vsapi) {
   vsapi->propSetData(out, "version", VERSION, -1, paAppend);
   vsapi->propSetData(out, "options", BUILD_OPTIONS, -1, paAppend);
   vsapi->propSetData(out, "timestamp", CONFIGURE_TIME, -1, paAppend);
+  vsapi->propSetInt(out, "vsapi_version", VAPOURSYNTH_API_VERSION, paAppend);
 }
 
 #define eedi2_common_params                                                                                                                \
@@ -1655,12 +1645,14 @@ void VS_CC BuildConfigCreate(const VSMap *, VSMap *out, void *, VSCore *, const 
 
 VS_EXTERNAL_API(void)
 VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
+  auto to_voidp = [](auto *p) { return const_cast<void *>(static_cast<const void *>(p)); };
+
   configFunc("club.amusement.eedi2cuda", "eedi2cuda", "EEDI2 filter using CUDA", VAPOURSYNTH_API_VERSION, 1, plugin);
   registerFunc("EEDI2",
                "clip:clip;"
                "field:int;" eedi2_common_params,
-               EEDI2Create, nullptr, plugin);
-  registerFunc("Enlarge2", "clip:clip;" eedi2_common_params, Enlarge2Create, nullptr, plugin);
-  registerFunc("AA2", "clip:clip;" eedi2_common_params, AA2Create, nullptr, plugin);
+               eedi2Create, to_voidp("EEDI2"), plugin);
+  registerFunc("Enlarge2", "clip:clip;" eedi2_common_params, eedi2Create, to_voidp("Enlarge2"), plugin);
+  registerFunc("AA2", "clip:clip;" eedi2_common_params, eedi2Create, to_voidp("AA2"), plugin);
   registerFunc("BuildConfig", "", BuildConfigCreate, nullptr, plugin);
 }
