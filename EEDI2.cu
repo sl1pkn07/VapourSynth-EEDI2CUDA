@@ -1604,8 +1604,8 @@ template <typename T> void eedi2CreateInner(std::string_view filterName, const V
     if (err)
       num_streams = 1;
     auto data = new (num_streams) Instance<T>(filterName, in, vsapi);
-    vsapi->createFilter(in, out, "EEDI2", eedi2Init<T>, eedi2GetFrame<T>, eedi2Free<T>, num_streams > 1 ? fmParallel : fmParallelRequests,
-                        0, data, core);
+    vsapi->createFilter(in, out, filterName.data(), eedi2Init<T>, eedi2GetFrame<T>, eedi2Free<T>,
+                        num_streams > 1 ? fmParallel : fmParallelRequests, 0, data, core);
   } catch (const std::exception &exc) {
     vsapi->setError(out, ("EEDI2CUDA: "s + exc.what()).c_str());
     return;
