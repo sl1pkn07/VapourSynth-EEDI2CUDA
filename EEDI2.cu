@@ -542,18 +542,17 @@ private:
 
 template <typename T> class Instance {
   using Item = std::pair<Pipeline<T>, std::atomic_flag>;
-
-  unsigned num_streams;
   boost::sync::semaphore semaphore;
 
-  Item *items() { return reinterpret_cast<Item *>(this + 1); }
+  inline Item *items() noexcept { return reinterpret_cast<Item *>(reinterpret_cast<unsigned *>(this + 1) + 1); }
+  inline unsigned num_streams() const noexcept { return *reinterpret_cast<const unsigned *>(this + 1); }
 
 public:
-  Instance(std::string_view filterName, const VSMap *in, const VSAPI *vsapi) : semaphore(num_streams) {
+  Instance(std::string_view filterName, const VSMap *in, const VSAPI *vsapi) : semaphore(num_streams()) {
     auto items = this->items();
     new (items) Item(std::piecewise_construct, std::forward_as_tuple(filterName, in, vsapi), std::forward_as_tuple());
     items[0].second.clear();
-    for (unsigned i = 1; i < num_streams; ++i) {
+    for (unsigned i = 1; i < num_streams(); ++i) {
       new (items + i) Item(std::piecewise_construct, std::forward_as_tuple(firstReactor(), vsapi), std::forward_as_tuple());
       items[i].second.clear();
     }
@@ -561,18 +560,18 @@ public:
 
   ~Instance() {
     auto items = this->items();
-    for (unsigned i = 0; i < num_streams; ++i)
+    for (unsigned i = 0; i < num_streams(); ++i)
       items[i].~Item();
   }
 
   Pipeline<T> &firstReactor() { return items()[0].first; }
 
   Pipeline<T> &acquireReactor() {
-    if (num_streams == 1)
+    if (num_streams() == 1)
       return firstReactor();
     semaphore.wait();
     auto items = this->items();
-    for (unsigned i = 0; i < num_streams; ++i) {
+    for (unsigned i = 0; i < num_streams(); ++i) {
       if (!items[i].second.test_and_set())
         return items[i].first;
     }
@@ -580,10 +579,10 @@ public:
   }
 
   void releaseReactor(const Pipeline<T> &instance) {
-    if (num_streams == 1)
+    if (num_streams() == 1)
       return;
     auto items = this->items();
-    for (unsigned i = 0; i < num_streams; ++i) {
+    for (unsigned i = 0; i < num_streams(); ++i) {
       if (&instance == &items[i].first) {
         items[i].second.clear();
         break;
@@ -593,8 +592,8 @@ public:
   }
 
   static void *operator new(size_t sz, unsigned num_streams) {
-    auto p = static_cast<Instance *>(::operator new(sz + sizeof(Item) * num_streams));
-    p->num_streams = num_streams;
+    auto p = static_cast<Instance *>(::operator new(sz + sizeof(unsigned) + sizeof(Item) * num_streams));
+    *reinterpret_cast<unsigned *>(p + 1) = num_streams;
     return p;
   }
 
