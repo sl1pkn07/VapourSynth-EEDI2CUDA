@@ -27,7 +27,7 @@ target_compile_options(EEDI2CUDA PRIVATE
     --expt-relaxed-constexpr
     --no-host-device-initializer-list
     --display-error-number
-    --diag-suppress 177,186,1305)
+    --diag-suppress 177,186)
 if(MSVC)
     target_compile_options(EEDI2CUDA PRIVATE "-Xcompiler=/W4 /wd4297 /wd4458")
 else()
