@@ -50,11 +50,24 @@ jobs:
     - name: Expand Boost
       run:  Expand-Archive boost.zip -DestinationPath .
       shell: pwsh
+    - name: Setup CUDA Env
+      run: |
+        echo "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2" >> $env:GITHUB_ENV
+        echo "CUDA_PATH_V11_2=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2" >> $env:GITHUB_ENV
+        echo "CUDA_PATH_VX_Y=CUDA_PATH_V11_2" >> $env:GITHUB_ENV
+      shell: pwsh
+    - name: Cache CUDA
+      id: cache-cuda
+      uses: actions/cache@v2
+      with:
+        path: ${{ env.CUDA_PATH }}
+        key: ${{ runner.os }}-cuda
     - name: Setup CUDA
       uses: Jimver/cuda-toolkit@v0.2.4
       with:
         cuda: 11.2.2
         sub-packages: '["nvcc", "cudart"]'
+      if: steps.cache-cuda.outputs.cache-hit != 'true'
     - name: Setup MSVC
       uses: ilammy/msvc-dev-cmd@v1
       with:
@@ -95,10 +108,23 @@ jobs:
         name: dep-boost
     - name: Expand Boost
       run:  unzip boost.zip
+    - name: Setup CUDA Env
+      run: |
+        echo "CUDA_PATH=/usr/local/cuda-11.2" >> $GITHUB_ENV
+        echo "CUDA_PATH_V11_2=/usr/local/cuda-11.2" >> $GITHUB_ENV
+        echo "CUDA_PATH_VX_Y=CUDA_PATH_V11_2" >> $GITHUB_ENV
+        echo "LD_LIBRARY_PATH=/usr/local/cuda-11.2/lib64" >> $GITHUB_ENV
+    - name: Cache CUDA
+      id: cache-cuda
+      uses: actions/cache@v2
+      with:
+        path: ${{ env.CUDA_PATH }}
+        key: ${{ runner.os }}-cuda
     - name: Setup CUDA
       uses: Jimver/cuda-toolkit@v0.2.4
       with:
         cuda: 11.2.2
+      if: steps.cache-cuda.outputs.cache-hit != 'true'
     - name: Configure
       run: |
         mkdir build
