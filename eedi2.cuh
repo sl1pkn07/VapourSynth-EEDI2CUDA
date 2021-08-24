@@ -938,8 +938,8 @@ private:
     constexpr size_t numMem2x = 6;
     T **mem = &dst;
     size_t pitch;
-    auto width = vi.width;
-    auto height = vi.height;
+    auto width = this->vi.width;
+    auto height = this->vi.height;
     auto height2x = height * 2;
     try_cuda(cudaMallocPitch(&mem[0], &pitch, width * sizeof(T), height * numMem));
     narrow_cast_to(d_pitch, pitch);
@@ -978,10 +978,10 @@ public:
     if (field > 1)
       field = (n & 1) ? (field == 2 ? 1 : 0) : (field == 2 ? 0 : 1);
 
-    auto subSampling = plane ? vi.subSampling : 0u;
+    auto subSampling = plane ? this->vi.subSampling : 0u;
 
-    auto width = vi.width >> subSampling;
-    auto height = vi.height >> subSampling;
+    auto width = this->vi.width >> subSampling;
+    auto height = this->vi.height >> subSampling;
     auto height2x = height * 2;
     auto width_bytes = width * sizeof(T);
     auto d_pitch = this->d_pitch >> subSampling;
