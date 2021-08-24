@@ -54,6 +54,7 @@ static PropsMap mapize(const VSMap *in, const VSAPI *vsapi) {
   return m;
 }
 
+namespace {
 template <typename T> class Pipeline : public BasePipeline<T> {
   std::unique_ptr<VSNode, void(VS_CC *const)(VSNode *)> node;
   VSVideoInfo vi2;
@@ -115,10 +116,11 @@ template <typename T> struct Instance : public BaseInstance<T> {
   Instance(std::string_view filterName, const VSMap *in, const VSAPI *vsapi)
       : BaseInstance<T>(std::forward_as_tuple(filterName, in, vsapi), std::forward_as_tuple(vsapi)) {}
 };
+} // namespace
 
 template <typename T>
-const VSFrame *VS_CC eedi2GetFrame(int n, int activationReason, void *instanceData, void **, VSFrameContext *frameCtx, VSCore *core,
-                                   const VSAPI *vsapi) {
+static const VSFrame *VS_CC eedi2GetFrame(int n, int activationReason, void *instanceData, void **, VSFrameContext *frameCtx, VSCore *core,
+                                          const VSAPI *vsapi) {
   auto data = static_cast<Instance<T> *>(instanceData);
   const VSFrame *out = nullptr;
 
@@ -137,12 +139,13 @@ const VSFrame *VS_CC eedi2GetFrame(int n, int activationReason, void *instanceDa
   return out;
 }
 
-template <typename T> void VS_CC eedi2Free(void *instanceData, VSCore *, const VSAPI *) {
+template <typename T> static void VS_CC eedi2Free(void *instanceData, VSCore *, const VSAPI *) {
   auto data = static_cast<Instance<T> *>(instanceData);
   delete data;
 }
 
-template <typename T> void eedi2CreateInner(std::string_view filterName, const VSMap *in, VSMap *out, const VSAPI *vsapi, VSCore *core) {
+template <typename T>
+static void eedi2CreateInner(std::string_view filterName, const VSMap *in, VSMap *out, const VSAPI *vsapi, VSCore *core) {
   try {
     int err;
     unsigned num_streams;

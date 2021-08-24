@@ -25,6 +25,7 @@
 
 #include "common.h"
 
+namespace {
 template <typename T> class Pipeline;
 template <typename T> class Instance;
 template <typename T> [[nodiscard]] Instance<T> *allocInstance(unsigned num_streams);
@@ -87,7 +88,9 @@ public:
 };
 
 template <typename T> [[nodiscard]] Instance<T> *allocInstance(unsigned num_streams) {
-  auto p = static_cast<Instance<T> *>(::operator new(sizeof(Instance<T>) + sizeof(unsigned) + sizeof(typename Instance<T>::Item) * num_streams));
+  auto p =
+      static_cast<Instance<T> *>(::operator new(sizeof(Instance<T>) + sizeof(unsigned) + sizeof(typename Instance<T>::Item) * num_streams));
   *reinterpret_cast<unsigned *>(p + 1) = num_streams;
   return p;
 }
+} // namespace
