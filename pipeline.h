@@ -222,7 +222,7 @@ private:
   }
 
 protected:
-  void getPlane(int n, int plane, int src_width, int src_height, int dst_width, int dst_height, int s_pitch_src, int s_pitch_dst,
+  void processPlane(int n, int plane, int src_width, int src_height, int dst_width, int dst_height, int s_pitch_src, int s_pitch_dst,
                 const void *s_src, void *s_dst) {
     auto src_width_bytes = src_width * sizeof(T);
     auto dst_width_bytes = dst_width * sizeof(T);

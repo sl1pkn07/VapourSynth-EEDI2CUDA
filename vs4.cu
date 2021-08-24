@@ -102,8 +102,8 @@ public:
       auto s_src = vsapi->getReadPtr(src_frame.get(), plane);
       auto s_dst = vsapi->getWritePtr(dst_frame.get(), plane);
 
-      this->getPlane(n, plane, src_width, src_height, dst_width, dst_height, static_cast<int>(s_pitch_src), static_cast<int>(s_pitch_dst),
-                     s_src, s_dst);
+      this->processPlane(n, plane, src_width, src_height, dst_width, dst_height, static_cast<int>(s_pitch_src),
+                         static_cast<int>(s_pitch_dst), s_src, s_dst);
     }
 
     return dst_frame.release();
