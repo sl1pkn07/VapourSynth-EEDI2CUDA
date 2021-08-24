@@ -155,12 +155,15 @@ protected:
       }
     }
 
+    PropsMap::size_type i = 0;
     try {
-      for (PropsMap::size_type i = 0;; ++i) {
+      for (;; ++i) {
         auto plane = props.get("planes", i).value();
         planes_flag |= 1 << plane;
       }
-    } catch (const std::bad_optional_access&) {}
+    } catch (const std::bad_optional_access &) {
+      if (i == 0) planes_flag = 7;
+    }
 
     passes.shrink_to_fit();
 
