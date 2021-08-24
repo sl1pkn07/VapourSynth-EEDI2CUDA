@@ -2,14 +2,11 @@
 
 #include "common.h"
 
-struct EEDI2Param {
-  unsigned d_pitch;
+struct EEDI2Param : public VideoInfo {
+  unsigned d_pitch, field;
   unsigned nt4, nt7, nt8, nt13, nt19;
   unsigned mthresh, lthresh, vthresh;
-  unsigned field;
-  unsigned estr, dstr;
-  unsigned maxd, subSampling;
-  int width, height;
+  unsigned estr, dstr, maxd;
 };
 
 #define KERNEL __global__ __launch_bounds__(64)

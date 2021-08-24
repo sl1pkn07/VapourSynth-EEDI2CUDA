@@ -68,12 +68,12 @@ template <typename T> struct Pass {
   virtual void setDstDevPtr(T *) { throw std::logic_error("this variable is readonly"); };
   virtual void setDstPitch(unsigned) { throw std::logic_error("this variable is readonly"); }
 
-  const VSVideoInfo &getOutputVI() const { return vi2; };
+  VideoInfo getOutputVI() const { return vi2; };
 
-  Pass(const VSVideoInfo &vi, const VSVideoInfo &vi2) : vi(vi), vi2(vi2) {}
+  Pass(VideoInfo vi, VideoInfo vi2) : vi(vi), vi2(vi2) {}
 
 protected:
-  VSVideoInfo vi, vi2;
+  VideoInfo vi, vi2;
 };
 
 template <typename T> class EEDI2Pass final : public Pass<T> {
@@ -88,7 +88,7 @@ template <typename T> class EEDI2Pass final : public Pass<T> {
 public:
   EEDI2Pass(const EEDI2Pass &other) : Pass<T>(other), d(other.d), map(other.map), pp(other.pp), fieldS(other.fieldS) { initCuda(); }
 
-  EEDI2Pass(const VSVideoInfo &vi, const VSVideoInfo &vi2, const EEDI2Param &d, unsigned map, unsigned pp, unsigned fieldS)
+  EEDI2Pass(VideoInfo vi, VideoInfo vi2, const EEDI2Param &d, unsigned map, unsigned pp, unsigned fieldS)
       : Pass<T>(vi, vi2), d(d), map(map), pp(pp), fieldS(fieldS) {
     initCuda();
   }
@@ -146,7 +146,7 @@ public:
     if (field > 1)
       field = (n & 1) ? (field == 2 ? 1 : 0) : (field == 2 ? 0 : 1);
 
-    auto subSampling = plane ? vi.format->subSamplingW : 0u;
+    auto subSampling = plane ? vi.subSampling : 0u;
 
     auto width = vi.width >> subSampling;
     auto height = vi.height >> subSampling;
@@ -241,13 +241,12 @@ template <typename T> struct TransposePass final : public BridgePass<T> {
   [[nodiscard]] Pass<T> *dup() const override { return new TransposePass(*this); }
 
   void process(int, int plane, cudaStream_t stream) override {
-    auto sw = !!plane * vi.format->subSamplingW;
-    auto sh = !!plane * vi.format->subSamplingH;
-    auto width = vi.width >> sw;
-    auto height = vi.height >> sh;
+    auto ss = !!plane * vi.subSampling;
+    auto width = vi.width >> ss;
+    auto height = vi.height >> ss;
     dim3 blocks = dim3(64, 8);
     dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.x + 1);
-    transpose<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src / sizeof(T) >> sw, d_pitch_dst / sizeof(T) >> sh);
+    transpose<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src / sizeof(T) >> ss, d_pitch_dst / sizeof(T) >> ss);
   }
 };
 
@@ -257,13 +256,12 @@ template <typename T> struct ScaleDownWPass final : public BridgePass<T> {
   [[nodiscard]] Pass<T> *dup() const override { return new ScaleDownWPass(*this); }
 
   void process(int, int plane, cudaStream_t stream) override {
-    auto sw = !!plane * vi.format->subSamplingW;
-    auto sh = !!plane * vi.format->subSamplingH;
-    auto width = vi2.width >> sw;
-    auto height = vi2.height >> sh;
+    auto ss = !!plane * vi.subSampling;
+    auto width = vi2.width >> ss;
+    auto height = vi2.height >> ss;
     dim3 blocks = dim3(64, 8);
     dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
-    resample12<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src >> sw, d_pitch_dst >> sw);
+    resample12<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src >> ss, d_pitch_dst >> ss);
   }
 };
 
@@ -273,20 +271,19 @@ template <typename T> struct ShiftWPass final : public BridgePass<T> {
   [[nodiscard]] Pass<T> *dup() const override { return new ShiftWPass(*this); }
 
   void process(int, int plane, cudaStream_t stream) override {
-    auto sw = !!plane * vi.format->subSamplingW;
-    auto sh = !!plane * vi.format->subSamplingH;
-    auto width = vi.width >> sw;
-    auto height = vi.height >> sh;
+    auto ss = !!plane * vi.subSampling;
+    auto width = vi.width >> ss;
+    auto height = vi.height >> ss;
     dim3 blocks = dim3(64, 8);
     dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
-    resample6<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src >> sw, d_pitch_dst >> sw);
+    resample6<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src >> ss, d_pitch_dst >> ss);
   }
 };
 
 template <typename T> class Pipeline {
   std::vector<std::unique_ptr<Pass<T>>> passes;
   std::unique_ptr<VSNodeRef, void (*const)(VSNodeRef *)> node;
-  VSVideoInfo vi;
+  VSVideoInfo vi, vi2;
   int device_id;
   cudaStream_t stream;
   T *h_src, *h_dst;
@@ -297,13 +294,14 @@ public:
       : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
     using invalid_arg = std::invalid_argument;
 
-    vi = *vsapi->getVideoInfo(node.get());
+    this->vi = *vsapi->getVideoInfo(node.get());
+    VideoInfo vi{this->vi.width, this->vi.height, this->vi.format->subSamplingW};
     auto vi2 = vi;
     EEDI2Param d;
-    const auto &fmt = *vi.format;
+    const auto &fmt = *this->vi.format;
     unsigned map, pp, fieldS;
 
-    if (!isConstantFormat(&vi) || fmt.sampleType != stInteger || fmt.bytesPerSample > 2)
+    if (!isConstantFormat(&this->vi) || fmt.sampleType != stInteger || fmt.bytesPerSample > 2)
       throw invalid_arg("only constant format 8-16 bits integer input supported");
     if (vi.width < 8 || vi.height < 7)
       throw invalid_arg("clip resolution too low");
@@ -385,6 +383,11 @@ public:
       }
     }
 
+    this->vi2 = this->vi;
+    auto ovi = passes.back()->getOutputVI();
+    this->vi2.width = ovi.width;
+    this->vi2.height = ovi.height;
+
     passes.shrink_to_fit();
 
     initCuda();
@@ -406,7 +409,7 @@ public:
       try_cuda(cudaFree(fb));
   }
 
-  const VSVideoInfo &getOutputVI() const { return passes.back()->getOutputVI(); }
+  const VSVideoInfo &getOutputVI() const { return vi2; }
 
   VSFrameRef *getFrame(int n, int activationReason, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
     if (activationReason == arInitial) {
@@ -417,8 +420,6 @@ public:
 
     if (device_id != -1)
       try_cuda(cudaSetDevice(device_id));
-
-    auto vi2 = passes.back()->getOutputVI();
 
     std::unique_ptr<const VSFrameRef, void (*const)(const VSFrameRef *)> src_frame{vsapi->getFrameFilter(n, node.get(), frameCtx),
                                                                                    vsapi->freeFrame};
@@ -452,8 +453,7 @@ public:
           auto &last = *passes[i - 1];
           auto &next = *passes[i + 1];
           auto last_vi = last.getOutputVI();
-          auto sw = !!plane * last_vi.format->subSamplingW;
-          auto sh = !!plane * last_vi.format->subSamplingH;
+          auto ss = !!plane * last_vi.subSampling;
           if (!cur.getSrcDevPtr()) {
             cur.setSrcDevPtr(const_cast<T *>(last.getDstDevPtr()));
             cur.setSrcPitch(last.getDstPitch());
@@ -476,8 +476,8 @@ public:
           auto curPtr = cur.getSrcDevPtr();
           auto lastPtr = last.getDstDevPtr();
           if (curPtr != lastPtr)
-            try_cuda(cudaMemcpy2DAsync(curPtr, cur.getSrcPitch() >> sw, lastPtr, last.getDstPitch() >> sw, last_vi.width * sizeof(T) >> sw,
-                                       last_vi.height >> sh, cudaMemcpyDeviceToDevice, stream));
+            try_cuda(cudaMemcpy2DAsync(curPtr, cur.getSrcPitch() >> ss, lastPtr, last.getDstPitch() >> ss, last_vi.width * sizeof(T) >> ss,
+                                       last_vi.height >> ss, cudaMemcpyDeviceToDevice, stream));
         }
         cur.process(n, plane, stream);
       }
