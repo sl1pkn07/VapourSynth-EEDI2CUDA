@@ -55,7 +55,6 @@ template <typename T> class BasePipeline {
 protected:
   VideoInfo getOutputVI() const { return passes.back()->getOutputVI(); }
 
-public:
   BasePipeline(std::string_view filterName, const PropsMap &props, VideoInfo vi) : vi(vi) {
     using invalid_arg = std::invalid_argument;
 
@@ -150,6 +149,7 @@ public:
     initCuda();
   }
 
+public:
   ~BasePipeline() {
     try_cuda(cudaFreeHost(h_src));
     try_cuda(cudaFreeHost(h_dst));

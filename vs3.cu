@@ -15,19 +15,18 @@
  * Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
-#include <atomic>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <string_view>
 #include <tuple>
-#include <utility>
-
-#include <boost/sync/semaphore.hpp>
 
 #include <VSHelper.h>
 #include <VapourSynth.h>
 
 #include "config.h"
 
+#include "instance.h"
 #include "pipeline.h"
 
 using namespace std::literals::string_literals;
@@ -109,66 +108,9 @@ public:
   }
 };
 
-template <typename T> class Instance {
-  using Item = std::pair<Pipeline<T>, std::atomic_flag>;
-  boost::sync::semaphore semaphore;
-
-  inline Item *items() noexcept { return reinterpret_cast<Item *>(reinterpret_cast<unsigned *>(this + 1) + 1); }
-  inline unsigned num_streams() const noexcept { return *reinterpret_cast<const unsigned *>(this + 1); }
-
-public:
-  Instance(std::string_view filterName, const VSMap *in, const VSAPI *vsapi) : semaphore(num_streams()) {
-    auto items = this->items();
-    new (items) Item(std::piecewise_construct, std::forward_as_tuple(filterName, in, vsapi), std::forward_as_tuple());
-    items[0].second.clear();
-    for (unsigned i = 1; i < num_streams(); ++i) {
-      new (items + i) Item(std::piecewise_construct, std::forward_as_tuple(firstReactor(), vsapi), std::forward_as_tuple());
-      items[i].second.clear();
-    }
-  }
-
-  ~Instance() {
-    auto items = this->items();
-    for (unsigned i = 0; i < num_streams(); ++i)
-      items[i].~Item();
-  }
-
-  Pipeline<T> &firstReactor() { return items()[0].first; }
-
-  Pipeline<T> &acquireReactor() {
-    if (num_streams() == 1)
-      return firstReactor();
-    semaphore.wait();
-    auto items = this->items();
-    for (unsigned i = 0; i < num_streams(); ++i) {
-      if (!items[i].second.test_and_set())
-        return items[i].first;
-    }
-    unreachable();
-  }
-
-  void releaseReactor(const Pipeline<T> &instance) {
-    if (num_streams() == 1)
-      return;
-    auto items = this->items();
-    for (unsigned i = 0; i < num_streams(); ++i) {
-      if (&instance == &items[i].first) {
-        items[i].second.clear();
-        break;
-      }
-    }
-    semaphore.post();
-  }
-
-  static void *operator new(size_t sz, unsigned num_streams) {
-    auto p = static_cast<Instance *>(::operator new(sz + sizeof(unsigned) + sizeof(Item) * num_streams));
-    *reinterpret_cast<unsigned *>(p + 1) = num_streams;
-    return p;
-  }
-
-  static void operator delete(void *p, unsigned) { ::operator delete(p); }
-
-  static void operator delete(void *p) { ::operator delete(p); }
+template <typename T> struct Instance : public BaseInstance<T> {
+  Instance(std::string_view filterName, const VSMap *in, const VSAPI *vsapi)
+      : BaseInstance<T>(std::forward_as_tuple(filterName, in, vsapi), std::forward_as_tuple(vsapi)) {}
 };
 
 template <typename T> void VS_CC eedi2Init(VSMap *, VSMap *, void **instanceData, VSNode *node, VSCore *, const VSAPI *vsapi) {
@@ -210,7 +152,8 @@ template <typename T> void eedi2CreateInner(std::string_view filterName, const V
     numeric_cast_to(num_streams, vsapi->propGetInt(in, "num_streams", 0, &err));
     if (err)
       num_streams = 1;
-    auto data = new (num_streams) Instance<T>(filterName, in, vsapi);
+    auto data = allocInstance<T>(num_streams);
+    new (data) Instance<T>(filterName, in, vsapi);
     vsapi->createFilter(in, out, filterName.data(), eedi2Init<T>, eedi2GetFrame<T>, eedi2Free<T>,
                         num_streams > 1 ? fmParallel : fmParallelRequests, 0, data, core);
   } catch (const std::exception &exc) {

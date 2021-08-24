@@ -10,7 +10,7 @@ FetchContent_MakeAvailable(VapourSynth)
 set(CMAKE_CUDA_STANDARD 17 REQUIRED)
 set(CMAKE_CUDA_VISIBILITY_PRESET hidden)
 add_library(EEDI2CUDA SHARED
-    vs3.cu common.h eedi2.cuh utils.cuh pipeline.h)
+    vs3.cu common.h eedi2.cuh utils.cuh pipeline.h instance.h)
 target_include_directories(EEDI2CUDA PRIVATE
     "${PROJECT_BINARY_DIR}"
     "${vapoursynth_SOURCE_DIR}/include"
