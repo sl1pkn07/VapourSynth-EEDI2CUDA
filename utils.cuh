@@ -68,3 +68,48 @@ template <typename T> __global__ void resample6(const T *src, T *dst, int width,
 
   out = value_bound<T>(__float2int_rn(c));
 }
+
+template <typename T> struct TransposePass final : public BridgePass<T> {
+  using BridgePass<T>::BridgePass;
+
+  [[nodiscard]] Pass<T> *dup() const override { return new TransposePass(*this); }
+
+  void process(int, int plane, cudaStream_t stream) override {
+    auto ss = !!plane * vi.subSampling;
+    auto width = vi.width >> ss;
+    auto height = vi.height >> ss;
+    dim3 blocks = dim3(64, 8);
+    dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.x + 1);
+    transpose<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src / sizeof(T) >> ss, d_pitch_dst / sizeof(T) >> ss);
+  }
+};
+
+template <typename T> struct ScaleDownWPass final : public BridgePass<T> {
+  using BridgePass<T>::BridgePass;
+
+  [[nodiscard]] Pass<T> *dup() const override { return new ScaleDownWPass(*this); }
+
+  void process(int, int plane, cudaStream_t stream) override {
+    auto ss = !!plane * vi.subSampling;
+    auto width = vi2.width >> ss;
+    auto height = vi2.height >> ss;
+    dim3 blocks = dim3(64, 8);
+    dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
+    resample12<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src >> ss, d_pitch_dst >> ss);
+  }
+};
+
+template <typename T> struct ShiftWPass final : public BridgePass<T> {
+  using BridgePass<T>::BridgePass;
+
+  [[nodiscard]] Pass<T> *dup() const override { return new ShiftWPass(*this); }
+
+  void process(int, int plane, cudaStream_t stream) override {
+    auto ss = !!plane * vi.subSampling;
+    auto width = vi.width >> ss;
+    auto height = vi.height >> ss;
+    dim3 blocks = dim3(64, 8);
+    dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
+    resample6<<<grids, blocks, 0, stream>>>(src, dst, width, height, d_pitch_src >> ss, d_pitch_dst >> ss);
+  }
+};
