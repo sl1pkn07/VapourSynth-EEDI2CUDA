@@ -190,6 +190,7 @@ static void VS_CC BuildConfigCreate(const VSMap *, VSMap *out, void *, VSCore *,
   "map:int:opt;"                                                                                                                           \
   "nt:int:opt;"                                                                                                                            \
   "pp:int:opt;"                                                                                                                            \
+  "planes:int[]:opt;"                                                                                                                      \
   "num_streams:int:opt;"                                                                                                                   \
   "device_id:int:opt"
 

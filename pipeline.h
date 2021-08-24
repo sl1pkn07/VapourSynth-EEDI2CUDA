@@ -69,6 +69,7 @@ template <typename T> class BasePipeline {
   cudaStream_t stream;
   T *h_src, *h_dst;
   std::vector<T *> fbs;
+  unsigned planes_flag = 0;
 
 protected:
   VideoInfo getOutputVI() const { return passes.back()->getOutputVI(); }
@@ -154,12 +155,19 @@ protected:
       }
     }
 
+    try {
+      for (PropsMap::size_type i = 0;; ++i) {
+        auto plane = props.get("planes", i).value();
+        planes_flag |= 1 << plane;
+      }
+    } catch (const std::bad_optional_access&) {}
+
     passes.shrink_to_fit();
 
     initCuda();
   }
 
-  BasePipeline(const BasePipeline &other) : vi(other.vi), device_id(other.device_id) {
+  BasePipeline(const BasePipeline &other) : vi(other.vi), device_id(other.device_id), planes_flag(other.planes_flag) {
     passes.reserve(other.passes.size());
     for (const auto &step : other.passes)
       passes.emplace_back(step->dup());
@@ -219,6 +227,12 @@ protected:
     auto d_dst = passes.back()->getDstDevPtr();
     auto d_pitch_src = passes.front()->getSrcPitch() >> !!plane * vi.subSampling;
     auto d_pitch_dst = passes.back()->getDstPitch() >> !!plane * getOutputVI().subSampling;
+
+    if (!((1 << plane) & planes_flag)) {
+      if (src_width == dst_width && src_height == dst_height)
+        bitblt(s_dst, s_pitch_dst, s_src, s_pitch_src, src_width_bytes, src_height);
+      return;
+    }
 
     // upload
     bitblt(h_src, d_pitch_src, s_src, s_pitch_src, src_width_bytes, src_height);
