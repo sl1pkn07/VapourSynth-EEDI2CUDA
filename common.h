@@ -27,6 +27,9 @@
 using namespace std::literals::string_literals;
 
 #define setup_xy int x = threadIdx.x + blockIdx.x * blockDim.x, y = threadIdx.y + blockIdx.y * blockDim.y
+#define line(p) ((p) + (pitch / sizeof(T)) * y)
+#define lineOff(p, off) ((p) + int(pitch / sizeof(T)) * (y + (off)))
+#define point(p) ((p)[(pitch / sizeof(T)) * y + x])
 
 struct VideoInfo {
   int width, height, subSampling;

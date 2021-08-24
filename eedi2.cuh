@@ -56,10 +56,6 @@ __device__ int limlut[33]{6,  6,  7,  7,  8,  8,  9,  9,  9,  10, 10, 11, 11, 12
   if ((value) < (lower) || (value) >= (upper))                                                                                             \
   return
 
-#define line(p) ((p) + (pitch / sizeof(T)) * y)
-#define lineOff(p, off) ((p) + int(pitch / sizeof(T)) * (y + (off)))
-#define point(p) ((p)[(pitch / sizeof(T)) * y + x])
-
 namespace bose {
 template <typename T, size_t I, size_t J> __device__ __forceinline__ void P(T *arr) {
   T &a = arr[I - 1], &b = arr[J - 1];
@@ -1063,3 +1059,8 @@ public:
     }
   }
 };
+
+#undef KERNEL
+#undef setup_kernel
+#undef setup_kernel2x
+#undef bounds_check3
