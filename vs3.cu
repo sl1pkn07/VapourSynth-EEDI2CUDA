@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <tuple>
 #include <utility>
@@ -35,58 +36,65 @@
 
 using namespace std::literals::string_literals;
 
-template <typename T> class Pipeline {
+struct PropsMap : public std::multimap<std::string_view, int64_t> {
+  using std::multimap<std::string_view, int64_t>::multimap;
+
+  std::optional<mapped_type> get(const key_type &key, const size_type idx = static_cast<size_type>(-1)) const {
+    auto casual = idx == static_cast<size_type>(-1);
+    auto [bg, ed] = casual ? std::make_pair(find(key), end()) : equal_range(key);
+    if (bg == ed)
+      return std::nullopt;
+    if (!casual)
+      for (size_type i = 0; i < idx; ++i)
+        if (++bg == ed)
+          return std::nullopt;
+    return std::make_optional(bg->second);
+  }
+};
+
+template <typename T> class BasePipeline {
+protected:
   std::vector<std::unique_ptr<Pass<T>>> passes;
-  std::unique_ptr<VSNodeRef, void(VS_CC *const)(VSNodeRef *)> node;
-  VSVideoInfo vi, vi2;
+  VideoInfo vi;
   int device_id;
   cudaStream_t stream;
   T *h_src, *h_dst;
   std::vector<T *> fbs;
 
+protected:
+  VideoInfo getOutputVI() const { return passes.back()->getOutputVI(); }
+
 public:
-  Pipeline(std::string_view filterName, const VSMap *in, const VSAPI *vsapi)
-      : node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
+  BasePipeline(std::string_view filterName, const PropsMap &props, VideoInfo vi) : vi(vi) {
     using invalid_arg = std::invalid_argument;
 
-    this->vi = *vsapi->getVideoInfo(node.get());
-    VideoInfo vi{this->vi.width, this->vi.height, this->vi.format->subSamplingW};
     auto vi2 = vi;
     EEDI2Param d;
-    const auto &fmt = *this->vi.format;
     unsigned map, pp, fieldS;
 
-    if (!isConstantFormat(&this->vi) || fmt.sampleType != stInteger || fmt.bytesPerSample > 2)
-      throw invalid_arg("only constant format 8-16 bits integer input supported");
     if (vi.width < 8 || vi.height < 7)
       throw invalid_arg("clip resolution too low");
 
-    auto propGetIntDefault = [&](const char *key, int64_t def) {
-      int err;
-      auto ret = vsapi->propGetInt(in, key, 0, &err);
-      return err ? def : ret;
-    };
-
     if (filterName == "EEDI2")
-      numeric_cast_to(fieldS, vsapi->propGetInt(in, "field", 0, nullptr));
+      numeric_cast_to(fieldS, props.get("field").value());
     else
       fieldS = 1;
 
-    numeric_cast_to(d.mthresh, propGetIntDefault("mthresh", 10));
-    numeric_cast_to(d.lthresh, propGetIntDefault("lthresh", 20));
-    numeric_cast_to(d.vthresh, propGetIntDefault("vthresh", 20));
+    numeric_cast_to(d.mthresh, props.get("mthresh").value_or(10));
+    numeric_cast_to(d.lthresh, props.get("lthresh").value_or(20));
+    numeric_cast_to(d.vthresh, props.get("vthresh").value_or(20));
 
-    numeric_cast_to(d.estr, propGetIntDefault("estr", 2));
-    numeric_cast_to(d.dstr, propGetIntDefault("dstr", 4));
-    numeric_cast_to(d.maxd, propGetIntDefault("maxd", 24));
+    numeric_cast_to(d.estr, props.get("estr").value_or(2));
+    numeric_cast_to(d.dstr, props.get("dstr").value_or(4));
+    numeric_cast_to(d.maxd, props.get("maxd").value_or(24));
 
-    numeric_cast_to(map, propGetIntDefault("map", 0));
-    numeric_cast_to(pp, propGetIntDefault("pp", 1));
+    numeric_cast_to(map, props.get("map").value_or(0));
+    numeric_cast_to(pp, props.get("pp").value_or(1));
 
     unsigned nt;
-    numeric_cast_to(nt, propGetIntDefault("nt", 50));
+    numeric_cast_to(nt, props.get("nt").value_or(50));
 
-    numeric_cast_to(device_id, propGetIntDefault("device_id", -1));
+    numeric_cast_to(device_id, props.get("device_id").value_or(-1));
 
     if (fieldS > 3)
       throw invalid_arg("field must be 0, 1, 2 or 3");
@@ -138,18 +146,12 @@ public:
       }
     }
 
-    this->vi2 = this->vi;
-    auto ovi = passes.back()->getOutputVI();
-    this->vi2.width = ovi.width;
-    this->vi2.height = ovi.height;
-
     passes.shrink_to_fit();
 
     initCuda();
   }
 
-  Pipeline(const Pipeline &other, const VSAPI *vsapi)
-      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi), vi2(other.vi2), device_id(other.device_id) {
+  BasePipeline(const BasePipeline &other) : vi(other.vi), device_id(other.device_id) {
     passes.reserve(other.passes.size());
     for (const auto &step : other.passes)
       passes.emplace_back(step->dup());
@@ -157,12 +159,88 @@ public:
     initCuda();
   }
 
-  ~Pipeline() {
+  ~BasePipeline() {
     try_cuda(cudaFreeHost(h_src));
     try_cuda(cudaFreeHost(h_dst));
     for (auto fb : fbs)
       try_cuda(cudaFree(fb));
   }
+
+private:
+  void initCuda() {
+    try {
+      try_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
+    } catch (const CUDAError &exc) {
+      throw CUDAError(exc.what() + " Please upgrade your driver."s);
+    }
+
+    if (auto &firstStep = *passes.front(); !firstStep.getSrcDevPtr()) {
+      size_t pitch;
+      T *fb_d_src;
+      try_cuda(cudaMallocPitch(&fb_d_src, &pitch, vi.width * sizeof(T), vi.height));
+      firstStep.setSrcDevPtr(fb_d_src);
+      firstStep.setSrcPitch(static_cast<unsigned>(pitch));
+      fbs.push_back(fb_d_src);
+    }
+
+    if (auto &lastStep = *passes.back(); !lastStep.getDstDevPtr()) {
+      auto vi2 = lastStep.getOutputVI();
+      size_t pitch;
+      T *fb_d_dst;
+      try_cuda(cudaMallocPitch(&fb_d_dst, &pitch, vi2.width * sizeof(T), vi2.height));
+      lastStep.setDstDevPtr(fb_d_dst);
+      lastStep.setDstPitch(static_cast<unsigned>(pitch));
+      fbs.push_back(fb_d_dst);
+    }
+
+    auto d_pitch_src = passes.front()->getSrcPitch();
+    auto d_pitch_dst = passes.back()->getDstPitch();
+    auto src_height = vi.height;
+    auto dst_height = passes.back()->getOutputVI().height;
+    try_cuda(cudaHostAlloc(&h_src, d_pitch_src * src_height, cudaHostAllocWriteCombined));
+    try_cuda(cudaHostAlloc(&h_dst, d_pitch_dst * dst_height, cudaHostAllocDefault));
+  }
+};
+
+VideoInfo get_vi(const VSMap *in, const VSAPI *vsapi) {
+  auto node = vsapi->propGetNode(in, "clip", 0, nullptr);
+  auto vi = vsapi->getVideoInfo(node);
+  vsapi->freeNode(node);
+  VideoInfo vvi{vi->width, vi->height, vi->format->subSamplingW};
+  return vvi;
+}
+
+PropsMap mapize(const VSMap *in, const VSAPI *vsapi) {
+  PropsMap m;
+  for (auto i = 0, num_keys = vsapi->propNumKeys(in); i < num_keys; ++i) {
+    auto key = vsapi->propGetKey(in, i);
+    if (vsapi->propGetType(in, key) != ptInt)
+      continue;
+    auto num_el = vsapi->propNumElements(in, key);
+    for (auto j = 0; j < num_el; ++j) {
+      auto val = vsapi->propGetInt(in, key, j, nullptr);
+      m.emplace(key, val);
+    }
+  }
+  return m;
+}
+
+template <typename T> class Pipeline : public BasePipeline<T> {
+  std::unique_ptr<VSNodeRef, void(VS_CC *const)(VSNodeRef *)> node;
+  VSVideoInfo vi2;
+
+public:
+  Pipeline(std::string_view filterName, const VSMap *in, const VSAPI *vsapi)
+      : BasePipeline<T>(filterName, mapize(in, vsapi), get_vi(in, vsapi)),
+        node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
+    vi2 = *vsapi->getVideoInfo(node.get());
+    auto ovi = BasePipeline<T>::getOutputVI();
+    vi2.width = ovi.width;
+    vi2.height = ovi.height;
+  }
+
+  Pipeline(const Pipeline &other, const VSAPI *vsapi)
+      : BasePipeline<T>(other), node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi2(other.vi2) {}
 
   const VSVideoInfo &getOutputVI() const { return vi2; }
 
@@ -181,7 +259,7 @@ public:
     std::unique_ptr<VSFrameRef, void(VS_CC *const)(const VSFrameRef *)> dst_frame{
         vsapi->newVideoFrame(vi2.format, vi2.width, vi2.height, src_frame.get(), core), vsapi->freeFrame};
 
-    for (int plane = 0; plane < vi.format->numPlanes; ++plane) {
+    for (int plane = 0; plane < vi2.format->numPlanes; ++plane) {
       auto src_width = vsapi->getFrameWidth(src_frame.get(), plane);
       auto src_height = vsapi->getFrameHeight(src_frame.get(), plane);
       auto dst_width = vsapi->getFrameWidth(dst_frame.get(), plane);
@@ -194,7 +272,7 @@ public:
       auto s_dst = vsapi->getWritePtr(dst_frame.get(), plane);
       auto d_src = passes.front()->getSrcDevPtr();
       auto d_dst = passes.back()->getDstDevPtr();
-      auto d_pitch_src = passes.front()->getSrcPitch() >> !!plane * vi.format->subSamplingW;
+      auto d_pitch_src = passes.front()->getSrcPitch() >> !!plane * vi2.format->subSamplingW;
       auto d_pitch_dst = passes.back()->getDstPitch() >> !!plane * vi2.format->subSamplingW;
 
       // upload
@@ -244,41 +322,6 @@ public:
     }
 
     return dst_frame.release();
-  }
-
-private:
-  void initCuda() {
-    try {
-      try_cuda(cudaStreamCreateWithFlags(&stream, cudaStreamNonBlocking));
-    } catch (const CUDAError &exc) {
-      throw CUDAError(exc.what() + " Please upgrade your driver."s);
-    }
-
-    if (auto &firstStep = *passes.front(); !firstStep.getSrcDevPtr()) {
-      size_t pitch;
-      T *fb_d_src;
-      try_cuda(cudaMallocPitch(&fb_d_src, &pitch, vi.width * sizeof(T), vi.height));
-      firstStep.setSrcDevPtr(fb_d_src);
-      firstStep.setSrcPitch(static_cast<unsigned>(pitch));
-      fbs.push_back(fb_d_src);
-    }
-
-    if (auto &lastStep = *passes.back(); !lastStep.getDstDevPtr()) {
-      auto vi2 = lastStep.getOutputVI();
-      size_t pitch;
-      T *fb_d_dst;
-      try_cuda(cudaMallocPitch(&fb_d_dst, &pitch, vi2.width * sizeof(T), vi2.height));
-      lastStep.setDstDevPtr(fb_d_dst);
-      lastStep.setDstPitch(static_cast<unsigned>(pitch));
-      fbs.push_back(fb_d_dst);
-    }
-
-    auto d_pitch_src = passes.front()->getSrcPitch();
-    auto d_pitch_dst = passes.back()->getDstPitch();
-    auto src_height = vi.height;
-    auto dst_height = passes.back()->getOutputVI().height;
-    try_cuda(cudaHostAlloc(&h_src, d_pitch_src * src_height, cudaHostAllocWriteCombined));
-    try_cuda(cudaHostAlloc(&h_dst, d_pitch_dst * dst_height, cudaHostAllocDefault));
   }
 };
 
