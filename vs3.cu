@@ -85,7 +85,7 @@ public:
     } else if (activationReason != arAllFramesReady)
       return nullptr;
 
-    prepare();
+    this->prepare();
 
     std::unique_ptr<const VSFrameRef, void(VS_CC *const)(const VSFrameRef *)> src_frame{vsapi->getFrameFilter(n, node.get(), frameCtx),
                                                                                         vsapi->freeFrame};
@@ -102,7 +102,7 @@ public:
       auto s_src = vsapi->getReadPtr(src_frame.get(), plane);
       auto s_dst = vsapi->getWritePtr(dst_frame.get(), plane);
 
-      getPlane(n, plane, src_width, src_height, dst_width, dst_height, s_pitch_src, s_pitch_dst, s_src, s_dst);
+      this->getPlane(n, plane, src_width, src_height, dst_width, dst_height, s_pitch_src, s_pitch_dst, s_src, s_dst);
     }
 
     return dst_frame.release();
