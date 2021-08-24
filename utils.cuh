@@ -1,5 +1,7 @@
 #pragma once
 
+#include <limits>
+
 #include "common.h"
 
 __constant__ float spline36_offset00_weights12[] = {9.8684211e-03f,  0.0000000e+00f, -5.9210526e-02f, 0.0000000e+00f,

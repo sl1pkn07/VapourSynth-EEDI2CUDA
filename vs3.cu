@@ -20,11 +20,9 @@
 #include <memory>
 #include <stdexcept>
 #include <tuple>
-#include <type_traits>
 #include <utility>
 #include <vector>
 
-#include <boost/numeric/conversion/cast.hpp>
 #include <boost/sync/semaphore.hpp>
 
 #include <VSHelper.h>

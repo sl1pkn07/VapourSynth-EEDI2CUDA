@@ -1,5 +1,8 @@
 #pragma once
 
+#include <limits>
+#include <type_traits>
+
 #include "common.h"
 
 struct EEDI2Param : public VideoInfo {

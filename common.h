@@ -1,6 +1,12 @@
 #pragma once
 
+#include <stdexcept>
 #include <string>
+
+#include <assert.h>
+
+#include <boost/numeric/conversion/cast.hpp>
+
 using namespace std::literals::string_literals;
 
 #define setup_xy int x = threadIdx.x + blockIdx.x * blockDim.x, y = threadIdx.y + blockIdx.y * blockDim.y
