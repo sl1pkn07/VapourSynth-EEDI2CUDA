@@ -149,7 +149,7 @@ public:
   }
 
   Pipeline(const Pipeline &other, const VSAPI *vsapi)
-      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi), device_id(other.device_id) {
+      : node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi(other.vi), vi2(other.vi2), device_id(other.device_id) {
     passes.reserve(other.passes.size());
     for (const auto &step : other.passes)
       passes.emplace_back(step->dup());
