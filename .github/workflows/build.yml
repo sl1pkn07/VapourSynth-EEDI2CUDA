@@ -116,7 +116,7 @@ jobs:
         echo "LD_LIBRARY_PATH=/usr/local/cuda-11.2/lib64" >> $GITHUB_ENV
     - name: Cache CUDA
       id: cache-cuda
-      uses: actions/cache@v2
+      uses: jwt27/cache@dist
       with:
         path: ${{ env.CUDA_PATH }}
         key: ${{ runner.os }}-cuda
