@@ -18,10 +18,10 @@ struct EEDI2Param : public VideoInfo {
   setup_xy;                                                                                                                                \
   int width = d.width, height = d.height;                                                                                                  \
   auto pitch = d.d_pitch;                                                                                                                  \
-  __assume(width > 0);                                                                                                                     \
-  __assume(height > 0);                                                                                                                    \
-  __assume(x >= 0);                                                                                                                        \
-  __assume(y >= 0);                                                                                                                        \
+  __builtin_assume(width > 0);                                                                                                             \
+  __builtin_assume(height > 0);                                                                                                            \
+  __builtin_assume(x >= 0);                                                                                                                \
+  __builtin_assume(y >= 0);                                                                                                                \
   constexpr T shift = sizeof(T) * 8 - 8, peak = std::numeric_limits<T>::max(), ten = 10 << shift, twleve = 12 << shift,                    \
               eight = 8 << shift, twenty = 20 << shift, three = 3 << shift, nine = 9 << shift;                                             \
   constexpr T shift2 = shift + 2, neutral = peak / 2;                                                                                      \
