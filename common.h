@@ -46,7 +46,7 @@ class CUDAError : public std::runtime_error {
     }                                                                                                                                      \
   } while (0)
 
-[[noreturn]] void unreachable() { assert(false); }
+static [[noreturn]] void unreachable() { assert(false); }
 
 template <typename Td, typename Ts> void numeric_cast_to(Td &dst, Ts src) { dst = boost::numeric_cast<Td>(src); }
 template <typename Td, typename Ts> void narrow_cast_to(Td &dst, Ts src) { dst = static_cast<Td>(src); }

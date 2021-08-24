@@ -28,6 +28,24 @@
 #include "eedi2.cuh"
 #include "utils.cuh"
 
+static inline void bitblt(void *dstp, int dst_stride, const void *srcp, int src_stride, size_t row_size, size_t height) {
+  // Copyright (C) 2012-2015 Fredrik Mellbin
+  if (height) {
+    if (src_stride == dst_stride && src_stride == (int)row_size) {
+      memcpy(dstp, srcp, row_size * height);
+    } else {
+      const uint8_t *srcp8 = (const uint8_t *)srcp;
+      uint8_t *dstp8 = (uint8_t *)dstp;
+      size_t i;
+      for (i = 0; i < height; i++) {
+        memcpy(dstp8, srcp8, row_size);
+        srcp8 += src_stride;
+        dstp8 += dst_stride;
+      }
+    }
+  }
+}
+
 struct PropsMap : public std::multimap<std::string_view, int64_t> {
   using std::multimap<std::string_view, int64_t>::multimap;
 
@@ -203,7 +221,7 @@ protected:
     auto d_pitch_dst = passes.back()->getDstPitch() >> !!plane * getOutputVI().subSampling;
 
     // upload
-    vs_bitblt(h_src, d_pitch_src, s_src, s_pitch_src, src_width_bytes, src_height);
+    bitblt(h_src, d_pitch_src, s_src, s_pitch_src, src_width_bytes, src_height);
     try_cuda(cudaMemcpy2DAsync(d_src, d_pitch_src, h_src, d_pitch_src, src_width_bytes, src_height, cudaMemcpyHostToDevice, stream));
 
     // process
@@ -245,7 +263,7 @@ protected:
     // download
     try_cuda(cudaMemcpy2DAsync(h_dst, d_pitch_dst, d_dst, d_pitch_dst, dst_width_bytes, dst_height, cudaMemcpyDeviceToHost, stream));
     try_cuda(cudaStreamSynchronize(stream));
-    vs_bitblt(s_dst, s_pitch_dst, h_dst, d_pitch_dst, dst_width_bytes, dst_height);
+    bitblt(s_dst, s_pitch_dst, h_dst, d_pitch_dst, dst_width_bytes, dst_height);
   }
 
   void prepare() {

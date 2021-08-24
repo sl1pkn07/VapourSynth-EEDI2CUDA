@@ -21,8 +21,8 @@
 #include <string_view>
 #include <tuple>
 
-#include <VSHelper.h>
-#include <VapourSynth.h>
+#include <VSHelper4.h>
+#include <VapourSynth4.h>
 
 #include "config.h"
 
@@ -32,22 +32,22 @@
 using namespace std::literals::string_literals;
 
 static VideoInfo get_vi(const VSMap *in, const VSAPI *vsapi) {
-  auto node = vsapi->propGetNode(in, "clip", 0, nullptr);
+  auto node = vsapi->mapGetNode(in, "clip", 0, nullptr);
   auto vi = vsapi->getVideoInfo(node);
   vsapi->freeNode(node);
-  VideoInfo vvi{vi->width, vi->height, vi->format->subSamplingW};
+  VideoInfo vvi{vi->width, vi->height, vi->format.subSamplingW};
   return vvi;
 }
 
 static PropsMap mapize(const VSMap *in, const VSAPI *vsapi) {
   PropsMap m;
-  for (auto i = 0, num_keys = vsapi->propNumKeys(in); i < num_keys; ++i) {
-    auto key = vsapi->propGetKey(in, i);
-    if (vsapi->propGetType(in, key) != ptInt)
+  for (auto i = 0, num_keys = vsapi->mapNumKeys(in); i < num_keys; ++i) {
+    auto key = vsapi->mapGetKey(in, i);
+    if (vsapi->mapGetType(in, key) != ptInt)
       continue;
-    auto num_el = vsapi->propNumElements(in, key);
+    auto num_el = vsapi->mapNumElements(in, key);
     for (auto j = 0; j < num_el; ++j) {
-      auto val = vsapi->propGetInt(in, key, j, nullptr);
+      auto val = vsapi->mapGetInt(in, key, j, nullptr);
       m.emplace(key, val);
     }
   }
@@ -55,29 +55,29 @@ static PropsMap mapize(const VSMap *in, const VSAPI *vsapi) {
 }
 
 template <typename T> class Pipeline : public BasePipeline<T> {
-  std::unique_ptr<VSNodeRef, void(VS_CC *const)(VSNodeRef *)> node;
+  std::unique_ptr<VSNode, void(VS_CC *const)(VSNode *)> node;
   VSVideoInfo vi2;
 
 public:
   Pipeline(std::string_view filterName, const VSMap *in, const VSAPI *vsapi)
       : BasePipeline<T>(filterName, mapize(in, vsapi), get_vi(in, vsapi)),
-        node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
+        node(vsapi->mapGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
     auto vi = vsapi->getVideoInfo(node.get());
     vi2 = *vi;
     auto ovi = BasePipeline<T>::getOutputVI();
     vi2.width = ovi.width;
     vi2.height = ovi.height;
 
-    if (!isConstantFormat(vi) || vi->format->sampleType != stInteger || vi->format->bytesPerSample > 2)
+    if (!vsh::isConstantVideoFormat(vi) || vi->format.sampleType != stInteger || vi->format.bytesPerSample > 2)
       throw std::invalid_argument("only constant format 8-16 bits integer input supported");
   }
 
   Pipeline(const Pipeline &other, const VSAPI *vsapi)
-      : BasePipeline<T>(other), node(vsapi->cloneNodeRef(other.node.get()), vsapi->freeNode), vi2(other.vi2) {}
+      : BasePipeline<T>(other), node(vsapi->addNodeRef(other.node.get()), vsapi->freeNode), vi2(other.vi2) {}
 
   const VSVideoInfo &getOutputVI() const { return vi2; }
 
-  VSFrameRef *getFrame(int n, int activationReason, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
+  VSFrame *getFrame(int n, int activationReason, VSFrameContext *frameCtx, VSCore *core, const VSAPI *vsapi) {
     if (activationReason == arInitial) {
       vsapi->requestFrameFilter(n, node.get(), frameCtx);
       return nullptr;
@@ -86,12 +86,12 @@ public:
 
     this->prepare();
 
-    std::unique_ptr<const VSFrameRef, void(VS_CC *const)(const VSFrameRef *)> src_frame{vsapi->getFrameFilter(n, node.get(), frameCtx),
-                                                                                        vsapi->freeFrame};
-    std::unique_ptr<VSFrameRef, void(VS_CC *const)(const VSFrameRef *)> dst_frame{
-        vsapi->newVideoFrame(vi2.format, vi2.width, vi2.height, src_frame.get(), core), vsapi->freeFrame};
+    std::unique_ptr<const VSFrame, void(VS_CC *const)(const VSFrame *)> src_frame{vsapi->getFrameFilter(n, node.get(), frameCtx),
+                                                                                  vsapi->freeFrame};
+    std::unique_ptr<VSFrame, void(VS_CC *const)(const VSFrame *)> dst_frame{
+        vsapi->newVideoFrame(&vi2.format, vi2.width, vi2.height, src_frame.get(), core), vsapi->freeFrame};
 
-    for (int plane = 0; plane < vi2.format->numPlanes; ++plane) {
+    for (int plane = 0; plane < vi2.format.numPlanes; ++plane) {
       auto src_width = vsapi->getFrameWidth(src_frame.get(), plane);
       auto src_height = vsapi->getFrameHeight(src_frame.get(), plane);
       auto dst_width = vsapi->getFrameWidth(dst_frame.get(), plane);
@@ -101,11 +101,14 @@ public:
       auto s_src = vsapi->getReadPtr(src_frame.get(), plane);
       auto s_dst = vsapi->getWritePtr(dst_frame.get(), plane);
 
-      this->getPlane(n, plane, src_width, src_height, dst_width, dst_height, s_pitch_src, s_pitch_dst, s_src, s_dst);
+      this->getPlane(n, plane, src_width, src_height, dst_width, dst_height, static_cast<int>(s_pitch_src), static_cast<int>(s_pitch_dst),
+                     s_src, s_dst);
     }
 
     return dst_frame.release();
   }
+
+  const VSFilterDependency getFilterDependency() const { return {node.get(), rpStrictSpatial}; }
 };
 
 template <typename T> struct Instance : public BaseInstance<T> {
@@ -113,17 +116,11 @@ template <typename T> struct Instance : public BaseInstance<T> {
       : BaseInstance<T>(std::forward_as_tuple(filterName, in, vsapi), std::forward_as_tuple(vsapi)) {}
 };
 
-template <typename T> void VS_CC eedi2Init(VSMap *, VSMap *, void **instanceData, VSNode *node, VSCore *, const VSAPI *vsapi) {
-  auto data = static_cast<Instance<T> *>(*instanceData);
-  vsapi->setVideoInfo(&data->firstReactor().getOutputVI(), 1, node);
-}
-
 template <typename T>
-const VSFrameRef *VS_CC eedi2GetFrame(int n, int activationReason, void **instanceData, void **, VSFrameContext *frameCtx, VSCore *core,
-                                      const VSAPI *vsapi) {
-
-  auto data = static_cast<Instance<T> *>(*instanceData);
-  const VSFrameRef *out = nullptr;
+const VSFrame *VS_CC eedi2GetFrame(int n, int activationReason, void *instanceData, void **, VSFrameContext *frameCtx, VSCore *core,
+                                   const VSAPI *vsapi) {
+  auto data = static_cast<Instance<T> *>(instanceData);
+  const VSFrame *out = nullptr;
 
   if (activationReason == arInitial) {
     out = data->firstReactor().getFrame(n, activationReason, frameCtx, core, vsapi);
@@ -149,35 +146,36 @@ template <typename T> void eedi2CreateInner(std::string_view filterName, const V
   try {
     int err;
     unsigned num_streams;
-    numeric_cast_to(num_streams, vsapi->propGetInt(in, "num_streams", 0, &err));
+    numeric_cast_to(num_streams, vsapi->mapGetInt(in, "num_streams", 0, &err));
     if (err)
       num_streams = 1;
     auto data = allocInstance<T>(num_streams);
     new (data) Instance<T>(filterName, in, vsapi);
-    vsapi->createFilter(in, out, filterName.data(), eedi2Init<T>, eedi2GetFrame<T>, eedi2Free<T>,
-                        num_streams > 1 ? fmParallel : fmParallelRequests, 0, data, core);
+    auto &fr = data->firstReactor();
+    VSFilterDependency deps[] = {fr.getFilterDependency()};
+    vsapi->createVideoFilter(out, filterName.data(), &fr.getOutputVI(), eedi2GetFrame<T>, eedi2Free<T>,
+                             num_streams > 1 ? fmParallel : fmParallelRequests, deps, 1, data, core);
   } catch (const std::exception &exc) {
-    vsapi->setError(out, ("EEDI2CUDA: "s + exc.what()).c_str());
+    vsapi->mapSetError(out, ("EEDI2CUDA: "s + exc.what()).c_str());
     return;
   }
 }
-
 static VS_CC void eedi2Create(const VSMap *in, VSMap *out, void *userData, VSCore *core, const VSAPI *vsapi) {
   std::string_view filterName{static_cast<const char *>(userData)};
-  VSNodeRef *node = vsapi->propGetNode(in, "clip", 0, nullptr);
+  VSNode *node = vsapi->mapGetNode(in, "clip", 0, nullptr);
   const VSVideoInfo *vi = vsapi->getVideoInfo(node);
   vsapi->freeNode(node);
-  if (vi->format->bytesPerSample == 1)
+  if (vi->format.bytesPerSample == 1)
     eedi2CreateInner<uint8_t>(filterName, in, out, vsapi, core);
   else
     eedi2CreateInner<uint16_t>(filterName, in, out, vsapi, core);
 }
 
 static void VS_CC BuildConfigCreate(const VSMap *, VSMap *out, void *, VSCore *, const VSAPI *vsapi) {
-  vsapi->propSetData(out, "version", VERSION, -1, paAppend);
-  vsapi->propSetData(out, "options", BUILD_OPTIONS, -1, paAppend);
-  vsapi->propSetData(out, "timestamp", CONFIGURE_TIME, -1, paAppend);
-  vsapi->propSetInt(out, "vsapi_version", VAPOURSYNTH_API_VERSION, paAppend);
+  vsapi->mapSetData(out, "version", VERSION, -1, ptData, maAppend);
+  vsapi->mapSetData(out, "options", BUILD_OPTIONS, -1, ptData, maAppend);
+  vsapi->mapSetData(out, "timestamp", CONFIGURE_TIME, -1, ptData, maAppend);
+  vsapi->mapSetInt(out, "vsapi_version", VAPOURSYNTH_API_VERSION, maAppend);
 }
 
 #define eedi2_common_params                                                                                                                \
@@ -194,15 +192,16 @@ static void VS_CC BuildConfigCreate(const VSMap *, VSMap *out, void *, VSCore *,
   "device_id:int:opt"
 
 VS_EXTERNAL_API(void)
-VapourSynthPluginInit(VSConfigPlugin configFunc, VSRegisterFunction registerFunc, VSPlugin *plugin) {
+VapourSynthPluginInit2(VSPlugin *plugin, const VSPLUGINAPI *vspapi) {
   auto to_voidp = [](auto *p) { return const_cast<void *>(static_cast<const void *>(p)); };
 
-  configFunc("club.amusement.eedi2cuda", "eedi2cuda", "EEDI2 filter using CUDA", VAPOURSYNTH_API_VERSION, 1, plugin);
-  registerFunc("EEDI2",
-               "clip:clip;"
-               "field:int;" eedi2_common_params,
-               eedi2Create, to_voidp("EEDI2"), plugin);
-  registerFunc("Enlarge2", "clip:clip;" eedi2_common_params, eedi2Create, to_voidp("Enlarge2"), plugin);
-  registerFunc("AA2", "clip:clip;" eedi2_common_params, eedi2Create, to_voidp("AA2"), plugin);
-  registerFunc("BuildConfig", "", BuildConfigCreate, nullptr, plugin);
+  vspapi->configPlugin("club.amusement.eedi2cuda", "eedi2cuda", "EEDI2 filter using CUDA", VS_MAKE_VERSION(2, 2), VAPOURSYNTH_API_VERSION,
+                       0, plugin);
+  vspapi->registerFunction("EEDI2",
+                           "clip:vnode;"
+                           "field:int;" eedi2_common_params,
+                           "clip:vnode", eedi2Create, to_voidp("EEDI2"), plugin);
+  vspapi->registerFunction("Enlarge2", "clip:vnode;" eedi2_common_params, "clip:vnode", eedi2Create, to_voidp("Enlarge2"), plugin);
+  vspapi->registerFunction("AA2", "clip:vnode;" eedi2_common_params, "clip:vnode", eedi2Create, to_voidp("AA2"), plugin);
+  vspapi->registerFunction("BuildConfig", "", "config:data", BuildConfigCreate, nullptr, plugin);
 }
