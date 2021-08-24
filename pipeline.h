@@ -200,7 +200,7 @@ protected:
     auto d_src = passes.front()->getSrcDevPtr();
     auto d_dst = passes.back()->getDstDevPtr();
     auto d_pitch_src = passes.front()->getSrcPitch() >> !!plane * vi.subSampling;
-    auto d_pitch_dst = passes.back()->getDstPitch() >> !!plane * vi.subSampling;
+    auto d_pitch_dst = passes.back()->getDstPitch() >> !!plane * getOutputVI().subSampling;
 
     // upload
     vs_bitblt(h_src, d_pitch_src, s_src, s_pitch_src, src_width_bytes, src_height);
