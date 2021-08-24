@@ -3,14 +3,16 @@ project(VapourSynth-EEDI2CUDA CUDA)
 
 include(FetchContent)
 FetchContent_Declare(VapourSynth
-    URL             https://github.com/vapoursynth/vapoursynth/archive/refs/tags/R54-API4-test2.zip
-    URL_HASH    MD5=27606869F37C63EC7B6E10F58F6F0BB7)
+    URL             https://github.com/vapoursynth/vapoursynth/archive/refs/tags/R55-API4-test3.zip
+    URL_HASH    MD5=5985B54ACCFAA623D7B0526DA0F42040)
 FetchContent_MakeAvailable(VapourSynth)
 
 set(CMAKE_CUDA_STANDARD 17 REQUIRED)
 set(CMAKE_CUDA_VISIBILITY_PRESET hidden)
 add_library(EEDI2CUDA SHARED
-    vs3.cu vs4.cu common.h eedi2.cuh utils.cuh pipeline.h instance.h)
+    vs3.cu vs4.cu
+    common.h eedi2.cuh utils.cuh
+    pipeline.h instance.h)
 target_include_directories(EEDI2CUDA PRIVATE
     "${PROJECT_BINARY_DIR}"
     "${vapoursynth_SOURCE_DIR}/include"
