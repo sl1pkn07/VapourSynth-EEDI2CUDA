@@ -63,10 +63,14 @@ public:
   Pipeline(std::string_view filterName, const VSMap *in, const VSAPI *vsapi)
       : BasePipeline<T>(filterName, mapize(in, vsapi), get_vi(in, vsapi)),
         node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
-    vi2 = *vsapi->getVideoInfo(node.get());
+    auto vi = vsapi->getVideoInfo(node.get());
+    vi2 = *vi;
     auto ovi = BasePipeline<T>::getOutputVI();
     vi2.width = ovi.width;
     vi2.height = ovi.height;
+
+    if (!isConstantFormat(vi) || vi->format->sampleType != stInteger || vi->format->bytesPerSample > 2)
+      throw std::invalid_argument("only constant format 8-16 bits integer input supported");
   }
 
   Pipeline(const Pipeline &other, const VSAPI *vsapi)
@@ -80,6 +84,8 @@ public:
       return nullptr;
     } else if (activationReason != arAllFramesReady)
       return nullptr;
+
+    prepare();
 
     std::unique_ptr<const VSFrameRef, void(VS_CC *const)(const VSFrameRef *)> src_frame{vsapi->getFrameFilter(n, node.get(), frameCtx),
                                                                                         vsapi->freeFrame};
