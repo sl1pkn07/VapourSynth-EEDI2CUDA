@@ -108,23 +108,10 @@ jobs:
         name: dep-boost
     - name: Expand Boost
       run:  unzip boost.zip
-    - name: Setup CUDA Env
-      run: |
-        echo "CUDA_PATH=/usr/local/cuda-11.2" >> $GITHUB_ENV
-        echo "CUDA_PATH_V11_2=/usr/local/cuda-11.2" >> $GITHUB_ENV
-        echo "CUDA_PATH_VX_Y=CUDA_PATH_V11_2" >> $GITHUB_ENV
-        echo "LD_LIBRARY_PATH=/usr/local/cuda-11.2/lib64" >> $GITHUB_ENV
-    - name: Cache CUDA
-      id: cache-cuda
-      uses: jwt27/cache@dist
-      with:
-        path: ${{ env.CUDA_PATH }}
-        key: ${{ runner.os }}-cuda
     - name: Setup CUDA
       uses: Jimver/cuda-toolkit@v0.2.4
       with:
         cuda: 11.2.2
-      if: steps.cache-cuda.outputs.cache-hit != 'true'
     - name: Configure
       run: |
         mkdir build
