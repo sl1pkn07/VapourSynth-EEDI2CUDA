@@ -36,7 +36,7 @@ template <typename T> class BaseInstance {
   Item *items() noexcept { return reinterpret_cast<Item *>(reinterpret_cast<unsigned *>(this + 1) + 1); }
   unsigned num_streams() const noexcept { return *reinterpret_cast<const unsigned *>(this + 1); }
 
-  template <typename T> friend Instance<T> *allocInstance(unsigned num_streams);
+  friend Instance<T> *allocInstance<>(unsigned num_streams);
 
 protected:
   template <typename... Args1, typename... Args2>
@@ -87,7 +87,7 @@ public:
 };
 
 template <typename T> [[nodiscard]] Instance<T> *allocInstance(unsigned num_streams) {
-  auto p = static_cast<Instance<T> *>(::operator new(sizeof(Instance<T>) + sizeof(unsigned) + sizeof(Instance<T>::Item) * num_streams));
+  auto p = static_cast<Instance<T> *>(::operator new(sizeof(Instance<T>) + sizeof(unsigned) + sizeof(typename Instance<T>::Item) * num_streams));
   *reinterpret_cast<unsigned *>(p + 1) = num_streams;
   return p;
 }
