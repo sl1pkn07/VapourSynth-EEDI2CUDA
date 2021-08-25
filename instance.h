@@ -76,12 +76,12 @@ public:
     unreachable();
   }
 
-  void releaseReactor(const Pipeline<T> &instance) {
+  void releaseReactor(const Pipeline<T> &reactor) {
     if (num_streams() == 1)
       return;
     auto items = this->items();
     for (std::size_t i = 0; i < num_streams(); ++i) {
-      if (&instance == &items[i].first) {
+      if (&reactor == &items[i].first) {
         items[i].second.clear(std::memory_order_release);
         break;
       }
