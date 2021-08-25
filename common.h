@@ -33,6 +33,13 @@ using namespace std::literals::string_literals;
 
 struct VideoInfo {
   int width, height, subSampling;
+
+  bool operator==(VideoInfo other) const {
+    return width == other.width && height == other.height && subSampling == other.subSampling;
+  }
+  bool operator!=(VideoInfo other) const {
+    return !(*this == other);
+  }
 };
 
 class CUDAError : public std::runtime_error {
