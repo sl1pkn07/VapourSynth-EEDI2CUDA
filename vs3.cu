@@ -151,7 +151,7 @@ template <typename T>
 static void eedi2CreateInner(std::string_view filterName, const VSMap *in, VSMap *out, const VSAPI *vsapi, VSCore *core) {
   try {
     int err;
-    unsigned num_streams;
+    std::size_t num_streams;
     numeric_cast_to(num_streams, vsapi->propGetInt(in, "num_streams", 0, &err));
     if (err)
       num_streams = 1;

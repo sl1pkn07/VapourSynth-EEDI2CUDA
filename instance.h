@@ -28,24 +28,25 @@
 namespace {
 template <typename T> class Pipeline;
 template <typename T> class Instance;
-template <typename T> [[nodiscard]] Instance<T> *allocInstance(unsigned num_streams);
+template <typename T> [[nodiscard]] Instance<T> *allocInstance(std::size_t num_streams);
 
 template <typename T> class BaseInstance {
   using Item = std::pair<Pipeline<T>, std::atomic_flag>;
   boost::sync::semaphore semaphore;
 
-  Item *items() noexcept { return reinterpret_cast<Item *>(reinterpret_cast<unsigned *>(this + 1) + 1); }
-  unsigned num_streams() const noexcept { return *reinterpret_cast<const unsigned *>(this + 1); }
+  Item *items() noexcept { return reinterpret_cast<Item *>(reinterpret_cast<std::size_t *>(this + 1) + 1); }
+  std::size_t num_streams() const noexcept { return *reinterpret_cast<const std::size_t *>(this + 1); }
 
-  friend Instance<T> *allocInstance<>(unsigned num_streams);
+  friend Instance<T> *allocInstance<>(std::size_t num_streams);
 
 protected:
   template <typename... Args1, typename... Args2>
-  BaseInstance(std::tuple<Args1...> primaryPipelineArgs, std::tuple<Args2...> secondaryPipelineAdditionalArgs) : semaphore(num_streams()) {
+  BaseInstance(std::tuple<Args1...> primaryPipelineArgs, std::tuple<Args2...> secondaryPipelineAdditionalArgs)
+      : semaphore(boost::numeric_cast<unsigned>(num_streams())) {
     auto items = this->items();
     new (items) Item(std::piecewise_construct, primaryPipelineArgs, std::forward_as_tuple());
     items[0].second.clear();
-    for (unsigned i = 1; i < num_streams(); ++i) {
+    for (std::size_t i = 1; i < num_streams(); ++i) {
       new (items + i) Item(std::piecewise_construct, std::tuple_cat(std::forward_as_tuple(firstReactor()), secondaryPipelineAdditionalArgs),
                            std::forward_as_tuple());
       items[i].second.clear();
@@ -55,7 +56,7 @@ protected:
 public:
   ~BaseInstance() {
     auto items = this->items();
-    for (unsigned i = 0; i < num_streams(); ++i)
+    for (std::size_t i = 0; i < num_streams(); ++i)
       items[i].~Item();
   }
 
@@ -67,7 +68,7 @@ public:
     semaphore.wait();
     auto items = this->items();
     auto base = rand() % num_streams();
-    for (unsigned j = 0; j < num_streams(); ++j) {
+    for (std::size_t j = 0; j < num_streams(); ++j) {
       auto i = (base + j) % num_streams();
       if (!items[i].second.test_and_set(std::memory_order_acquire))
         return items[i].first;
@@ -79,7 +80,7 @@ public:
     if (num_streams() == 1)
       return;
     auto items = this->items();
-    for (unsigned i = 0; i < num_streams(); ++i) {
+    for (std::size_t i = 0; i < num_streams(); ++i) {
       if (&instance == &items[i].first) {
         items[i].second.clear(std::memory_order_release);
         break;
@@ -89,10 +90,12 @@ public:
   }
 };
 
-template <typename T> [[nodiscard]] Instance<T> *allocInstance(unsigned num_streams) {
-  auto p =
-      static_cast<Instance<T> *>(::operator new(sizeof(Instance<T>) + sizeof(unsigned) + sizeof(typename Instance<T>::Item) * num_streams));
-  *reinterpret_cast<unsigned *>(p + 1) = num_streams;
+template <typename T> [[nodiscard]] Instance<T> *allocInstance(std::size_t num_streams) {
+  typedef typename Instance<T>::Item Item;
+  constexpr std::size_t fr = sizeof(Instance<T>) + sizeof(num_streams);
+  static_assert((__STDCPP_DEFAULT_NEW_ALIGNMENT__ + fr) % alignof(Item) == 0, "unable to allocate instance with proper alignment");
+  auto p = static_cast<Instance<T> *>(::operator new(fr + sizeof(Item) * num_streams));
+  *reinterpret_cast<std::size_t *>(p + 1) = num_streams;
   return p;
 }
 } // namespace
