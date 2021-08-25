@@ -89,10 +89,19 @@ public:
 
     std::unique_ptr<const VSFrameRef, void(VS_CC *const)(const VSFrameRef *)> src_frame{vsapi->getFrameFilter(n, node.get(), frameCtx),
                                                                                         vsapi->freeFrame};
+
+    auto bypass_mask = this->getPlaneBypassMask();
+    const VSFrameRef *plane_src[]{bypass_mask & 1 ? src_frame.get() : nullptr, bypass_mask & 2 ? src_frame.get() : nullptr,
+                                  bypass_mask & 4 ? src_frame.get() : nullptr};
+    int planes[] = {0, 1, 2};
+
     std::unique_ptr<VSFrameRef, void(VS_CC *const)(const VSFrameRef *)> dst_frame{
-        vsapi->newVideoFrame(vi2.format, vi2.width, vi2.height, src_frame.get(), core), vsapi->freeFrame};
+        vsapi->newVideoFrame2(vi2.format, vi2.width, vi2.height, plane_src, planes, src_frame.get(), core), vsapi->freeFrame};
 
     for (int plane = 0; plane < vi2.format->numPlanes; ++plane) {
+      if (bypass_mask & (1u << plane))
+        continue;
+
       auto src_width = vsapi->getFrameWidth(src_frame.get(), plane);
       auto src_height = vsapi->getFrameHeight(src_frame.get(), plane);
       auto dst_width = vsapi->getFrameWidth(dst_frame.get(), plane);

@@ -69,7 +69,7 @@ template <typename T> class BasePipeline {
   cudaStream_t stream;
   T *h_src, *h_dst;
   std::vector<T *> fbs;
-  unsigned planes_flag = 0;
+  unsigned plane_mask = 0;
 
 protected:
   VideoInfo getOutputVI() const { return passes.back()->getOutputVI(); }
@@ -159,10 +159,11 @@ protected:
     try {
       for (;; ++i) {
         auto plane = props.get("planes", i).value();
-        planes_flag |= 1 << plane;
+        plane_mask |= 1 << plane;
       }
     } catch (const std::bad_optional_access &) {
-      if (i == 0) planes_flag = 7;
+      if (i == 0)
+        plane_mask = 7;
     }
 
     passes.shrink_to_fit();
@@ -170,7 +171,7 @@ protected:
     initCuda();
   }
 
-  BasePipeline(const BasePipeline &other) : vi(other.vi), device_id(other.device_id), planes_flag(other.planes_flag) {
+  BasePipeline(const BasePipeline &other) : vi(other.vi), device_id(other.device_id), plane_mask(other.plane_mask) {
     passes.reserve(other.passes.size());
     for (const auto &step : other.passes)
       passes.emplace_back(step->dup());
@@ -231,11 +232,7 @@ protected:
     auto d_pitch_src = passes.front()->getSrcPitch() >> !!plane * vi.subSampling;
     auto d_pitch_dst = passes.back()->getDstPitch() >> !!plane * getOutputVI().subSampling;
 
-    if (!((1 << plane) & planes_flag)) {
-      if (src_width == dst_width && src_height == dst_height)
-        bitblt(s_dst, s_pitch_dst, s_src, s_pitch_src, src_width_bytes, src_height);
-      return;
-    }
+    if (!((1u << plane) & plane_mask)) return;
 
     // upload
     bitblt(h_src, d_pitch_src, s_src, s_pitch_src, src_width_bytes, src_height);
@@ -286,5 +283,11 @@ protected:
   void prepare() {
     if (device_id != -1)
       try_cuda(cudaSetDevice(device_id));
+  }
+
+  unsigned getPlaneBypassMask() const {
+    const auto vi2 = getOutputVI();
+    if (vi != vi2) return 0;
+    else return ~plane_mask & 7;
   }
 };
