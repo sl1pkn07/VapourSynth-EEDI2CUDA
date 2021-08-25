@@ -66,8 +66,10 @@ public:
       return firstReactor();
     semaphore.wait();
     auto items = this->items();
-    for (unsigned i = 0; i < num_streams(); ++i) {
-      if (!items[i].second.test_and_set())
+    auto base = rand() % num_streams();
+    for (unsigned j = 0; j < num_streams(); ++j) {
+      auto i = (base + j) % num_streams();
+      if (!items[i].second.test_and_set(std::memory_order_acquire))
         return items[i].first;
     }
     unreachable();
@@ -79,7 +81,7 @@ public:
     auto items = this->items();
     for (unsigned i = 0; i < num_streams(); ++i) {
       if (&instance == &items[i].first) {
-        items[i].second.clear();
+        items[i].second.clear(std::memory_order_release);
         break;
       }
     }
