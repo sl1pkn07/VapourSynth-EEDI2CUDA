@@ -31,13 +31,13 @@ using namespace std::literals::string_literals;
 #define lineOff(p, off) ((p) + int(pitch / sizeof(T)) * (y + (off)))
 #define point(p) ((p)[(pitch / sizeof(T)) * y + x])
 
-struct VideoInfo {
+struct VideoDimension {
   int width, height, subSampling;
 
-  bool operator==(VideoInfo other) const {
+  bool operator==(VideoDimension other) const {
     return width == other.width && height == other.height && subSampling == other.subSampling;
   }
-  bool operator!=(VideoInfo other) const {
+  bool operator!=(VideoDimension other) const {
     return !(*this == other);
   }
 };
@@ -79,12 +79,12 @@ template <typename T> struct Pass {
   virtual void setDstDevPtr(T *) { throw std::logic_error("this variable is readonly"); };
   virtual void setDstPitch(unsigned) { throw std::logic_error("this variable is readonly"); }
 
-  VideoInfo getOutputVI() const { return vi2; };
+  VideoDimension getOutputVI() const { return vi2; };
 
-  Pass(VideoInfo vi, VideoInfo vi2) : vi(vi), vi2(vi2) {}
+  Pass(VideoDimension vi, VideoDimension vi2) : vi(vi), vi2(vi2) {}
 
 protected:
-  VideoInfo vi, vi2;
+  VideoDimension vi, vi2;
 };
 
 template <typename T> struct BridgePass : public Pass<T> {

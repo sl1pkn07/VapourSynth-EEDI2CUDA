@@ -31,11 +31,11 @@
 
 using namespace std::literals::string_literals;
 
-static VideoInfo get_vi(const VSMap *in, const VSAPI *vsapi) {
+static VideoDimension get_vi(const VSMap *in, const VSAPI *vsapi) {
   auto node = vsapi->mapGetNode(in, "clip", 0, nullptr);
   auto vi = vsapi->getVideoInfo(node);
   vsapi->freeNode(node);
-  VideoInfo vvi{vi->width, vi->height, vi->format.subSamplingW};
+  VideoDimension vvi{vi->width, vi->height, vi->format.subSamplingW};
   return vvi;
 }
 

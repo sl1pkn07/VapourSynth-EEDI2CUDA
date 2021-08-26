@@ -64,7 +64,7 @@ struct PropsMap : public std::multimap<std::string_view, int64_t> {
 
 template <typename T> class BasePipeline {
   std::vector<std::unique_ptr<Pass<T>>> passes;
-  VideoInfo vi;
+  VideoDimension vi;
   int device_id;
   cudaStream_t stream;
   T *h_src, *h_dst;
@@ -72,9 +72,9 @@ template <typename T> class BasePipeline {
   unsigned plane_mask = 0;
 
 protected:
-  VideoInfo getOutputVI() const { return passes.back()->getOutputVI(); }
+  VideoDimension getOutputVI() const { return passes.back()->getOutputVI(); }
 
-  BasePipeline(std::string_view filterName, const PropsMap &props, VideoInfo vi) : vi(vi) {
+  BasePipeline(std::string_view filterName, const PropsMap &props, VideoDimension vi) : vi(vi) {
     using invalid_arg = std::invalid_argument;
 
     auto vi2 = vi;

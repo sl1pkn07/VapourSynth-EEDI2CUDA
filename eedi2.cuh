@@ -22,7 +22,7 @@
 
 #include "common.h"
 
-struct EEDI2Param : public VideoInfo {
+struct EEDI2Param : public VideoDimension {
   unsigned d_pitch, field;
   unsigned nt4, nt7, nt8, nt13, nt19;
   unsigned mthresh, lthresh, vthresh;
@@ -933,7 +933,7 @@ template <typename T> class EEDI2Pass final : public Pass<T> {
 public:
   EEDI2Pass(const EEDI2Pass &other) : Pass<T>(other), d(other.d), map(other.map), pp(other.pp), fieldS(other.fieldS) { initCuda(); }
 
-  EEDI2Pass(VideoInfo vi, VideoInfo vi2, const EEDI2Param &d, unsigned map, unsigned pp, unsigned fieldS)
+  EEDI2Pass(VideoDimension vi, VideoDimension vi2, const EEDI2Param &d, unsigned map, unsigned pp, unsigned fieldS)
       : Pass<T>(vi, vi2), d(d), map(map), pp(pp), fieldS(fieldS) {
     initCuda();
   }
