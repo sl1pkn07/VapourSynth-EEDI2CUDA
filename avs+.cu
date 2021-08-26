@@ -28,6 +28,12 @@
 #include "instance.h"
 #include "pipeline.h"
 
+#if defined(__GNUC__) && __GNUC__ >= 4
+#define VISIBILITY __attribute__((visibility("default")))
+#else
+#define VISIBILITY
+#endif
+
 static inline int getPlaneId(const VideoInfo &vi, int plane) {
   if (!vi.IsPlanar()) {
     throw std::runtime_error("only planar format is supported");
@@ -223,7 +229,7 @@ AVSValue __cdecl EEDI2Filter::Create(AVSValue args, void *user_data, IScriptEnvi
 
 const AVS_Linkage *AVS_linkage{};
 
-extern "C" __declspec(dllexport) const char *__stdcall AvisynthPluginInit3(IScriptEnvironment *env, const AVS_Linkage *const vectors) {
+extern "C" VISIBILITY __declspec(dllexport) const char *__stdcall AvisynthPluginInit3(IScriptEnvironment *env, const AVS_Linkage *const vectors) {
 
   auto to_voidp = [](auto *p) { return const_cast<void *>(static_cast<const void *>(p)); };
 
