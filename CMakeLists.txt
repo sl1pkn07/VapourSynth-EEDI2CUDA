@@ -5,17 +5,21 @@ include(FetchContent)
 FetchContent_Declare(VapourSynth
     URL             https://github.com/vapoursynth/vapoursynth/archive/refs/tags/R55-API4-RC1.zip
     URL_HASH    MD5=96E8740B1B4E47A3BECF34CFC11CF539)
-FetchContent_MakeAvailable(VapourSynth)
+FetchContent_Declare(AviSynthPlus
+    URL             https://github.com/AviSynth/AviSynthPlus/archive/refs/tags/v3.7.0.zip
+    URL_HASH    MD5=45239C3AB7750730DAB672175B47D357)
+FetchContent_MakeAvailable(VapourSynth AviSynthPlus)
 
 set(CMAKE_CUDA_STANDARD 17 REQUIRED)
 set(CMAKE_CUDA_VISIBILITY_PRESET hidden)
 add_library(EEDI2CUDA SHARED
-    vs3.cu vs4.cu
+    vs3.cu vs4.cu avs+.cu
     common.h eedi2.cuh utils.cuh
     pipeline.h instance.h)
 target_include_directories(EEDI2CUDA PRIVATE
     "${PROJECT_BINARY_DIR}"
     "${vapoursynth_SOURCE_DIR}/include"
+    "${avisynthplus_SOURCE_DIR}/avs_core/include"
     ${Boost_INCLUDE_DIRS}
     ${CUDA_TOOLKIT_INCLUDE_DIRECTORIES})
 target_compile_options(EEDI2CUDA PRIVATE
