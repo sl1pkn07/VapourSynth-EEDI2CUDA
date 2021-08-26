@@ -31,15 +31,14 @@
 
 using namespace std::literals::string_literals;
 
-static VideoDimension get_vi(const VSMap *in, const VSAPI *vsapi) {
+static VideoDimension create_vd(const VSMap *in, const VSAPI *vsapi) {
   auto node = vsapi->propGetNode(in, "clip", 0, nullptr);
   auto vi = vsapi->getVideoInfo(node);
   vsapi->freeNode(node);
-  VideoDimension vvi{vi->width, vi->height, vi->format->subSamplingW};
-  return vvi;
+  return VideoDimension{vi->width, vi->height, vi->format->subSamplingW};
 }
 
-static PropsMap mapize(const VSMap *in, const VSAPI *vsapi) {
+static PropsMap create_props_map(const VSMap *in, const VSAPI *vsapi) {
   PropsMap m;
   for (auto i = 0, num_keys = vsapi->propNumKeys(in); i < num_keys; ++i) {
     auto key = vsapi->propGetKey(in, i);
@@ -61,11 +60,11 @@ template <typename T> class Pipeline : public BasePipeline<T> {
 
 public:
   Pipeline(std::string_view filterName, const VSMap *in, const VSAPI *vsapi)
-      : BasePipeline<T>(filterName, mapize(in, vsapi), get_vi(in, vsapi)),
+      : BasePipeline<T>(filterName, create_props_map(in, vsapi), create_vd(in, vsapi)),
         node(vsapi->propGetNode(in, "clip", 0, nullptr), vsapi->freeNode) {
     auto vi = vsapi->getVideoInfo(node.get());
     vi2 = *vi;
-    auto ovi = BasePipeline<T>::getOutputVI();
+    auto ovi = this->getOVD();
     vi2.width = ovi.width;
     vi2.height = ovi.height;
 

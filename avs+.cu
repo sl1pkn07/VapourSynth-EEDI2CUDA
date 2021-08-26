@@ -48,13 +48,13 @@ static inline int getPlaneId(const VideoInfo &vi, int plane) {
   }
 }
 
-static VideoDimension get_vi(AVSValue args) {
+static VideoDimension create_vd(AVSValue args) {
   auto node = args[0].AsClip();
   const auto &vi = node->GetVideoInfo();
   return VideoDimension{vi.width, vi.height, vi.IsYUV() ? vi.GetPlaneWidthSubsampling(PLANAR_U) : 0};
 }
 
-static PropsMap mapize(AVSValue args) {
+static PropsMap create_props_map(AVSValue args) {
   PropsMap m;
 
   auto num_args = args.ArraySize();
@@ -97,10 +97,11 @@ template <typename T> class Pipeline : public BasePipeline<T> {
   VideoInfo vi2;
 
 public:
-  Pipeline(std::string_view filterName, AVSValue args) : BasePipeline<T>(filterName, mapize(args), get_vi(args)), node(args[0].AsClip()) {
+  Pipeline(std::string_view filterName, AVSValue args)
+      : BasePipeline<T>(filterName, create_props_map(args), create_vd(args)), node(args[0].AsClip()) {
     auto vi = node->GetVideoInfo();
     vi2 = vi;
-    auto ovi = BasePipeline<T>::getOutputVI();
+    auto ovi = this->getOVD();
     vi2.width = ovi.width;
     vi2.height = ovi.height;
 

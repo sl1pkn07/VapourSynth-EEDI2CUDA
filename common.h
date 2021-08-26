@@ -34,12 +34,8 @@ using namespace std::literals::string_literals;
 struct VideoDimension {
   int width, height, subSampling;
 
-  bool operator==(VideoDimension other) const {
-    return width == other.width && height == other.height && subSampling == other.subSampling;
-  }
-  bool operator!=(VideoDimension other) const {
-    return !(*this == other);
-  }
+  bool operator==(VideoDimension other) const { return width == other.width && height == other.height && subSampling == other.subSampling; }
+  bool operator!=(VideoDimension other) const { return !(*this == other); }
 };
 
 class CUDAError : public std::runtime_error {
@@ -79,12 +75,12 @@ template <typename T> struct Pass {
   virtual void setDstDevPtr(T *) { throw std::logic_error("this variable is readonly"); };
   virtual void setDstPitch(unsigned) { throw std::logic_error("this variable is readonly"); }
 
-  VideoDimension getOutputVI() const { return vi2; };
+  VideoDimension getOVD() const { return ovd; };
 
-  Pass(VideoDimension vi, VideoDimension vi2) : vi(vi), vi2(vi2) {}
+  Pass(VideoDimension ivd, VideoDimension ovd) : ivd(ivd), ovd(ovd) {}
 
 protected:
-  VideoDimension vi, vi2;
+  VideoDimension ivd, ovd;
 };
 
 template <typename T> struct BridgePass : public Pass<T> {

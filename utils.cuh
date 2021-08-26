@@ -94,12 +94,13 @@ template <typename T> struct TransposePass final : public BridgePass<T> {
   [[nodiscard]] Pass<T> *dup() const override { return new TransposePass(*this); }
 
   void process(int, int plane, cudaStream_t stream) override {
-    auto ss = !!plane * this->vi.subSampling;
-    auto width = this->vi.width >> ss;
-    auto height = this->vi.height >> ss;
+    auto ss = !!plane * this->ivd.subSampling;
+    auto width = this->ivd.width >> ss;
+    auto height = this->ivd.height >> ss;
     dim3 blocks = dim3(64, 8);
     dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.x + 1);
-    transpose<<<grids, blocks, 0, stream>>>(this->src, this->dst, width, height, this->d_pitch_src / sizeof(T) >> ss, this->d_pitch_dst / sizeof(T) >> ss);
+    transpose<<<grids, blocks, 0, stream>>>(this->src, this->dst, width, height, this->d_pitch_src / sizeof(T) >> ss,
+                                            this->d_pitch_dst / sizeof(T) >> ss);
   }
 };
 
@@ -109,9 +110,9 @@ template <typename T> struct ScaleDownWPass final : public BridgePass<T> {
   [[nodiscard]] Pass<T> *dup() const override { return new ScaleDownWPass(*this); }
 
   void process(int, int plane, cudaStream_t stream) override {
-    auto ss = !!plane * this->vi.subSampling;
-    auto width = this->vi2.width >> ss;
-    auto height = this->vi2.height >> ss;
+    auto ss = !!plane * this->ivd.subSampling;
+    auto width = this->ovd.width >> ss;
+    auto height = this->ovd.height >> ss;
     dim3 blocks = dim3(64, 8);
     dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
     resample12<<<grids, blocks, 0, stream>>>(this->src, this->dst, width, height, this->d_pitch_src >> ss, this->d_pitch_dst >> ss);
@@ -124,9 +125,9 @@ template <typename T> struct ShiftWPass final : public BridgePass<T> {
   [[nodiscard]] Pass<T> *dup() const override { return new ShiftWPass(*this); }
 
   void process(int, int plane, cudaStream_t stream) override {
-    auto ss = !!plane * this->vi.subSampling;
-    auto width = this->vi.width >> ss;
-    auto height = this->vi.height >> ss;
+    auto ss = !!plane * this->ivd.subSampling;
+    auto width = this->ivd.width >> ss;
+    auto height = this->ivd.height >> ss;
     dim3 blocks = dim3(64, 8);
     dim3 grids = dim3((width - 1) / blocks.x + 1, (height - 1) / blocks.y + 1);
     resample6<<<grids, blocks, 0, stream>>>(this->src, this->dst, width, height, this->d_pitch_src >> ss, this->d_pitch_dst >> ss);

@@ -64,7 +64,7 @@ struct PropsMap : public std::multimap<std::string_view, int64_t> {
 
 template <typename T> class BasePipeline {
   std::vector<std::unique_ptr<Pass<T>>> passes;
-  VideoDimension vi;
+  VideoDimension ivd;
   int device_id;
   cudaStream_t stream;
   T *h_src, *h_dst;
@@ -72,16 +72,16 @@ template <typename T> class BasePipeline {
   unsigned plane_mask = 0;
 
 protected:
-  VideoDimension getOutputVI() const { return passes.back()->getOutputVI(); }
+  VideoDimension getOVD() const { return passes.back()->getOVD(); }
 
-  BasePipeline(std::string_view filterName, const PropsMap &props, VideoDimension vi) : vi(vi) {
+  BasePipeline(std::string_view filterName, const PropsMap &props, VideoDimension vd) : ivd(vd) {
     using invalid_arg = std::invalid_argument;
 
-    auto vi2 = vi;
+    auto vd2 = vd;
     EEDI2Param d;
     unsigned map, pp, fieldS;
 
-    if (vi.width < 8 || vi.height < 7)
+    if (vd.width < 8 || vd.height < 7)
       throw invalid_arg("clip resolution too low");
 
     if (filterName == "EEDI2")
@@ -115,7 +115,7 @@ protected:
       throw invalid_arg("only pp=0 or 1 is implemented");
 
     if (map == 0 || map == 3)
-      vi2.height *= 2;
+      vd2.height *= 2;
 
     d.mthresh *= d.mthresh;
     d.vthresh *= 81;
@@ -127,31 +127,31 @@ protected:
     d.nt13 = nt * 13;
     d.nt19 = nt * 19;
 
-    passes.emplace_back(new EEDI2Pass<T>(vi, vi2, d, map, pp, fieldS));
+    passes.emplace_back(new EEDI2Pass<T>(vd, vd2, d, map, pp, fieldS));
 
     if (filterName != "EEDI2") {
-      auto vi3 = vi2;
-      std::swap(vi3.width, vi3.height); // XXX: this is correct for 420 & 444 only
-      passes.emplace_back(new TransposePass<T>(vi2, vi3));
-      auto vi4 = vi3;
+      auto vd3 = vd2;
+      std::swap(vd3.width, vd3.height); // XXX: this is correct for 420 & 444 only
+      passes.emplace_back(new TransposePass<T>(vd2, vd3));
+      auto vd4 = vd3;
       if (filterName == "AA2") {
-        vi4.width /= 2;
-        passes.emplace_back(new ScaleDownWPass<T>(vi3, vi4));
+        vd4.width /= 2;
+        passes.emplace_back(new ScaleDownWPass<T>(vd3, vd4));
       } else {
-        passes.emplace_back(new ShiftWPass<T>(vi3, vi4));
+        passes.emplace_back(new ShiftWPass<T>(vd3, vd4));
       }
-      auto vi5 = vi4;
-      vi5.height *= 2;
-      passes.emplace_back(new EEDI2Pass<T>(vi4, vi5, d, map, pp, fieldS));
-      auto vi6 = vi5;
-      std::swap(vi6.width, vi6.height);
-      passes.emplace_back(new TransposePass<T>(vi5, vi6));
-      auto vi7 = vi6;
+      auto vd5 = vd4;
+      vd5.height *= 2;
+      passes.emplace_back(new EEDI2Pass<T>(vd4, vd5, d, map, pp, fieldS));
+      auto vd6 = vd5;
+      std::swap(vd6.width, vd6.height);
+      passes.emplace_back(new TransposePass<T>(vd5, vd6));
+      auto vd7 = vd6;
       if (filterName == "AA2") {
-        vi7.width /= 2;
-        passes.emplace_back(new ScaleDownWPass<T>(vi6, vi7));
+        vd7.width /= 2;
+        passes.emplace_back(new ScaleDownWPass<T>(vd6, vd7));
       } else {
-        passes.emplace_back(new ShiftWPass<T>(vi6, vi7));
+        passes.emplace_back(new ShiftWPass<T>(vd6, vd7));
       }
     }
 
@@ -171,7 +171,7 @@ protected:
     initCuda();
   }
 
-  BasePipeline(const BasePipeline &other) : vi(other.vi), device_id(other.device_id), plane_mask(other.plane_mask) {
+  BasePipeline(const BasePipeline &other) : ivd(other.ivd), device_id(other.device_id), plane_mask(other.plane_mask) {
     passes.reserve(other.passes.size());
     for (const auto &step : other.passes)
       passes.emplace_back(step->dup());
@@ -198,17 +198,17 @@ private:
     if (auto &firstStep = *passes.front(); !firstStep.getSrcDevPtr()) {
       size_t pitch;
       T *fb_d_src;
-      try_cuda(cudaMallocPitch(&fb_d_src, &pitch, vi.width * sizeof(T), vi.height));
+      try_cuda(cudaMallocPitch(&fb_d_src, &pitch, ivd.width * sizeof(T), ivd.height));
       firstStep.setSrcDevPtr(fb_d_src);
       firstStep.setSrcPitch(static_cast<unsigned>(pitch));
       fbs.push_back(fb_d_src);
     }
 
     if (auto &lastStep = *passes.back(); !lastStep.getDstDevPtr()) {
-      auto vi2 = lastStep.getOutputVI();
+      auto ovd = getOVD();
       size_t pitch;
       T *fb_d_dst;
-      try_cuda(cudaMallocPitch(&fb_d_dst, &pitch, vi2.width * sizeof(T), vi2.height));
+      try_cuda(cudaMallocPitch(&fb_d_dst, &pitch, ovd.width * sizeof(T), ovd.height));
       lastStep.setDstDevPtr(fb_d_dst);
       lastStep.setDstPitch(static_cast<unsigned>(pitch));
       fbs.push_back(fb_d_dst);
@@ -216,23 +216,24 @@ private:
 
     auto d_pitch_src = passes.front()->getSrcPitch();
     auto d_pitch_dst = passes.back()->getDstPitch();
-    auto src_height = vi.height;
-    auto dst_height = passes.back()->getOutputVI().height;
+    auto src_height = ivd.height;
+    auto dst_height = getOVD().height;
     try_cuda(cudaHostAlloc(&h_src, d_pitch_src * src_height, cudaHostAllocWriteCombined));
     try_cuda(cudaHostAlloc(&h_dst, d_pitch_dst * dst_height, cudaHostAllocDefault));
   }
 
 protected:
   void processPlane(int n, int plane, int src_width, int src_height, int dst_width, int dst_height, int s_pitch_src, int s_pitch_dst,
-                const void *s_src, void *s_dst) {
+                    const void *s_src, void *s_dst) {
     auto src_width_bytes = src_width * sizeof(T);
     auto dst_width_bytes = dst_width * sizeof(T);
     auto d_src = passes.front()->getSrcDevPtr();
     auto d_dst = passes.back()->getDstDevPtr();
-    auto d_pitch_src = passes.front()->getSrcPitch() >> !!plane * vi.subSampling;
-    auto d_pitch_dst = passes.back()->getDstPitch() >> !!plane * getOutputVI().subSampling;
+    auto d_pitch_src = passes.front()->getSrcPitch() >> !!plane * ivd.subSampling;
+    auto d_pitch_dst = passes.back()->getDstPitch() >> !!plane * getOVD().subSampling;
 
-    if (!((1u << plane) & plane_mask)) return;
+    if (!((1u << plane) & plane_mask))
+      return;
 
     // upload
     bitblt(h_src, d_pitch_src, s_src, s_pitch_src, src_width_bytes, src_height);
@@ -244,7 +245,7 @@ protected:
       if (i) {
         auto &last = *passes[i - 1];
         auto &next = *passes[i + 1];
-        auto last_vi = last.getOutputVI();
+        auto last_vi = last.getOVD();
         auto ss = !!plane * last_vi.subSampling;
         if (!cur.getSrcDevPtr()) {
           cur.setSrcDevPtr(const_cast<T *>(last.getDstDevPtr()));
@@ -255,7 +256,7 @@ protected:
           cur.setDstPitch(next.getSrcPitch());
         }
         if (!cur.getDstDevPtr()) {
-          auto vi = cur.getOutputVI();
+          auto vi = cur.getOVD();
           size_t pitch;
           T *fb;
           try_cuda(cudaMallocPitch(&fb, &pitch, vi.width * sizeof(T), vi.height));
@@ -286,8 +287,10 @@ protected:
   }
 
   unsigned getPlaneBypassMask() const {
-    const auto vi2 = getOutputVI();
-    if (vi != vi2) return 0;
-    else return ~plane_mask & 7;
+    const auto vi2 = getOVD();
+    if (ivd != vi2)
+      return 0;
+    else
+      return ~plane_mask & 7;
   }
 };

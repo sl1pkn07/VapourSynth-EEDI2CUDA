@@ -933,8 +933,8 @@ template <typename T> class EEDI2Pass final : public Pass<T> {
 public:
   EEDI2Pass(const EEDI2Pass &other) : Pass<T>(other), d(other.d), map(other.map), pp(other.pp), fieldS(other.fieldS) { initCuda(); }
 
-  EEDI2Pass(VideoDimension vi, VideoDimension vi2, const EEDI2Param &d, unsigned map, unsigned pp, unsigned fieldS)
-      : Pass<T>(vi, vi2), d(d), map(map), pp(pp), fieldS(fieldS) {
+  EEDI2Pass(VideoDimension ivd, VideoDimension ovd, const EEDI2Param &d, unsigned map, unsigned pp, unsigned fieldS)
+      : Pass<T>(ivd, ovd), d(d), map(map), pp(pp), fieldS(fieldS) {
     initCuda();
   }
 
@@ -951,8 +951,8 @@ private:
     constexpr size_t numMem2x = 6;
     T **mem = &dst;
     size_t pitch;
-    auto width = this->vi.width;
-    auto height = this->vi.height;
+    auto width = this->ivd.width;
+    auto height = this->ivd.height;
     auto height2x = height * 2;
     try_cuda(cudaMallocPitch(&mem[0], &pitch, width * sizeof(T), height * numMem));
     narrow_cast_to(d_pitch, pitch);
@@ -991,10 +991,10 @@ public:
     if (field > 1)
       field = (n & 1) ? (field == 2 ? 1 : 0) : (field == 2 ? 0 : 1);
 
-    auto subSampling = plane ? this->vi.subSampling : 0u;
+    auto subSampling = plane ? this->ivd.subSampling : 0u;
 
-    auto width = this->vi.width >> subSampling;
-    auto height = this->vi.height >> subSampling;
+    auto width = this->ivd.width >> subSampling;
+    auto height = this->ivd.height >> subSampling;
     auto height2x = height * 2;
     auto width_bytes = width * sizeof(T);
     auto d_pitch = this->d_pitch >> subSampling;
