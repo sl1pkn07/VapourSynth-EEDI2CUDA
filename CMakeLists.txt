@@ -3,8 +3,8 @@ project(VapourSynth-EEDI2CUDA CUDA)
 
 include(FetchContent)
 FetchContent_Declare(VapourSynth
-    URL             https://github.com/vapoursynth/vapoursynth/archive/refs/tags/R55-API4-test3.zip
-    URL_HASH    MD5=5985B54ACCFAA623D7B0526DA0F42040)
+    URL             https://github.com/vapoursynth/vapoursynth/archive/refs/tags/R55-API4-RC1.zip
+    URL_HASH    MD5=96E8740B1B4E47A3BECF34CFC11CF539)
 FetchContent_MakeAvailable(VapourSynth)
 
 set(CMAKE_CUDA_STANDARD 17 REQUIRED)
