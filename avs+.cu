@@ -121,21 +121,21 @@ public:
     PVideoFrame dst_frame = env->NewVideoFrameP(vi2, &src_frame);
 
     for (int plane = 0; plane < vi2.NumComponents(); ++plane) {
-      if (bypass_mask & (1u << plane))
-        continue;
-
       auto src_width_bytes = src_frame->GetRowSize(getPlaneId(vi2, plane));
       auto dst_width_bytes = dst_frame->GetRowSize(getPlaneId(vi2, plane));
-      auto src_width = src_width_bytes / sizeof(T);
+      auto src_width = src_width_bytes / static_cast<int>(sizeof(T));
       auto src_height = src_frame->GetHeight(getPlaneId(vi2, plane));
-      auto dst_width = dst_width_bytes / sizeof(T);
+      auto dst_width = dst_width_bytes / static_cast<int>(sizeof(T));
       auto dst_height = dst_frame->GetHeight(getPlaneId(vi2, plane));
       auto s_pitch_src = src_frame->GetPitch(getPlaneId(vi2, plane));
       auto s_pitch_dst = dst_frame->GetPitch(getPlaneId(vi2, plane));
       auto s_src = src_frame->GetReadPtr(getPlaneId(vi2, plane));
       auto s_dst = dst_frame->GetWritePtr(getPlaneId(vi2, plane));
 
-      this->processPlane(n, plane, src_width, src_height, dst_width, dst_height, s_pitch_src, s_pitch_dst, s_src, s_dst);
+      if (bypass_mask & (1u << plane))
+        bitblt(s_dst, s_pitch_dst, s_src, s_pitch_src, src_width_bytes, src_height);
+      else
+        this->processPlane(n, plane, src_width, src_height, dst_width, dst_height, s_pitch_src, s_pitch_dst, s_src, s_dst);
     }
 
     return dst_frame;
@@ -143,7 +143,7 @@ public:
 };
 
 template <typename T> struct Instance : public BaseInstance<T> {
-  Instance(std::string_view filterName, AVSValue args, IScriptEnvironment *env)
+  Instance(std::string_view filterName, AVSValue args)
       : BaseInstance<T>(std::forward_as_tuple(filterName, args), std::forward_as_tuple()) {}
 };
 } // namespace
@@ -161,7 +161,7 @@ public:
 
   static AVSValue __cdecl Create(AVSValue args, void *user_data, IScriptEnvironment *env);
 
-  int __stdcall SetCacheHints(int cachehints, int frame_range) override { return cachehints == CACHE_GET_MTMODE ? MT_NICE_FILTER : 0; }
+  int __stdcall SetCacheHints(int cachehints, int) override { return cachehints == CACHE_GET_MTMODE ? MT_NICE_FILTER : 0; }
 };
 
 PVideoFrame __stdcall EEDI2Filter::GetFrame(int n, IScriptEnvironment *env) {
@@ -195,10 +195,10 @@ EEDI2Filter::EEDI2Filter(std::string_view filterName, AVSValue args, IScriptEnvi
     numeric_cast_to(num_streams, args[args.ArraySize() - 2].AsInt(1));
     if (vi.BitsPerComponent() == 8) {
       data.u8 = allocInstance<uint8_t>(num_streams);
-      new (data.u8) Instance<uint8_t>(filterName, args, env);
+      new (data.u8) Instance<uint8_t>(filterName, args);
     } else {
       data.u16 = allocInstance<uint16_t>(num_streams);
-      new (data.u16) Instance<uint16_t>(filterName, args, env);
+      new (data.u16) Instance<uint16_t>(filterName, args);
     }
   } catch (const std::exception &exc) {
     env->ThrowError(("EEDI2CUDA: "s + exc.what()).c_str());
