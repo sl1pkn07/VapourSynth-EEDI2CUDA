@@ -47,6 +47,13 @@ aa = core.std.Transpose(aa)
 
 It uses spline36 with [extended filter size](https://mpv.io/manual/stable/#options-correct-downscaling) for downscaling.
 
+### Using in AviSynth+
+- `EEDI2_CUDA`
+- `EEDI2_CUDA_Enlarge2`
+- `EEDI2_CUDA_AA2`
+
+Arguments are the same. All bindings share a unified DLL.
+
 ### Using in [mpv](https://mpv.io/)
 You can use eedi2cuda in mpv as the upscaler for realtime playback.
 First ensure the VapourSynth video filter is available in mpv.
@@ -72,8 +79,7 @@ from vapoursynth import core
 src16 = video_in.resize.Point(format=video_in.format.replace(bits_per_sample=16))
 w = src16.width
 h = src16.height
-y = core.std.ShufflePlanes(src16, 0, vs.GRAY)
-y = core.eedi2cuda.Enlarge2(y)
+y = core.eedi2cuda.Enlarge2(src16, planes=0)
 uv = core.resize.Point(src16, w * 2, h * 2,
                        format=vs.YUV444P16,
                        resample_filter_uv="spline36")
