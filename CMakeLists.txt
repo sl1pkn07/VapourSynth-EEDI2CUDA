@@ -8,7 +8,14 @@ FetchContent_Declare(VapourSynth
 FetchContent_Declare(AviSynthPlus
     URL             https://github.com/AviSynth/AviSynthPlus/archive/refs/tags/v3.7.0.zip
     URL_HASH    MD5=45239C3AB7750730DAB672175B47D357)
-FetchContent_MakeAvailable(VapourSynth AviSynthPlus)
+FetchContent_GetProperties(VapourSynth)
+if(NOT VapourSynth_POPULATED)
+    FetchContent_Populate(VapourSynth)
+endif()
+FetchContent_GetProperties(AviSynthPlus)
+if(NOT AviSynthPlus_POPULATED)
+    FetchContent_Populate(AviSynthPlus)
+endif()
 
 set(ENABLE_VAPOURSYNTH_API3_BINDING ON CACHE BOOL "Enable VapourSynth API3 binding")
 set(ENABLE_VAPOURSYNTH_API4_BINDING ON CACHE BOOL "Enable VapourSynth API4 binding")
