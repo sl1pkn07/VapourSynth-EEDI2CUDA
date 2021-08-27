@@ -19,8 +19,11 @@
 
 #include <atomic>
 #include <tuple>
+#include <type_traits>
 #include <utility>
 
+#include <boost/lockfree/policies.hpp>
+#include <boost/lockfree/queue.hpp>
 #include <boost/sync/semaphore.hpp>
 
 #include "common.h"
@@ -31,58 +34,65 @@ template <typename T> class Instance;
 template <typename T> [[nodiscard]] Instance<T> *allocInstance(std::size_t num_streams);
 
 template <typename T> class BaseInstance {
-  using Item = std::pair<Pipeline<T>, std::atomic_flag>;
-  boost::sync::semaphore semaphore;
+  static constexpr unsigned max_num_streams = 32;
 
-  Item *items() noexcept { return reinterpret_cast<Item *>(reinterpret_cast<std::size_t *>(this + 1) + 1); }
-  std::size_t num_streams() const noexcept { return *reinterpret_cast<const std::size_t *>(this + 1); }
+  boost::sync::semaphore semaphore;
+  boost::lockfree::queue<unsigned, boost::lockfree::capacity<max_num_streams>> available;
+
+  Pipeline<T> *items() noexcept { return reinterpret_cast<Pipeline<T> *>(reinterpret_cast<std::size_t *>(this + 1) + 1); }
+  unsigned num_streams() const noexcept { return static_cast<unsigned>(*reinterpret_cast<const std::size_t *>(this + 1)); }
 
   friend Instance<T> *allocInstance<>(std::size_t num_streams);
+
+  template <typename... Args, size_t... Indexes>
+  void initPipeline(Pipeline<T> *p, std::tuple<Args...> args, std::index_sequence<Indexes...>) {
+    new (p) Pipeline<T>(std::get<Indexes>(std::move(args))...);
+  }
 
 protected:
   template <typename... Args1, typename... Args2>
   BaseInstance(std::tuple<Args1...> primaryPipelineArgs, std::tuple<Args2...> secondaryPipelineAdditionalArgs)
-      : semaphore(boost::numeric_cast<unsigned>(num_streams())) {
+      : semaphore(num_streams()) {
+    if (num_streams() > max_num_streams) {
+      throw std::runtime_error("too many streams");
+    }
+
     auto items = this->items();
-    new (items) Item(std::piecewise_construct, primaryPipelineArgs, std::forward_as_tuple());
-    items[0].second.clear();
-    for (std::size_t i = 1; i < num_streams(); ++i) {
-      new (items + i) Item(std::piecewise_construct, std::tuple_cat(std::forward_as_tuple(firstReactor()), secondaryPipelineAdditionalArgs),
-                           std::forward_as_tuple());
-      items[i].second.clear();
+    initPipeline(items, primaryPipelineArgs, std::index_sequence_for<Args1...>{});
+    available.unsynchronized_push(0);
+    for (unsigned i = 1; i < num_streams(); ++i) {
+      initPipeline(items + i, std::tuple_cat(std::forward_as_tuple(firstReactor()), secondaryPipelineAdditionalArgs),
+                   std::make_index_sequence<sizeof...(Args2) + 1>{});
+      available.unsynchronized_push(i);
     }
   }
 
 public:
   ~BaseInstance() {
     auto items = this->items();
-    for (std::size_t i = 0; i < num_streams(); ++i)
-      items[i].~Item();
+    for (unsigned i = 0; i < num_streams(); ++i)
+      items[i].~Pipeline<T>();
   }
 
-  Pipeline<T> &firstReactor() { return items()[0].first; }
+  Pipeline<T> &firstReactor() { return items()[0]; }
 
   Pipeline<T> &acquireReactor() {
     if (num_streams() == 1)
       return firstReactor();
     semaphore.wait();
     auto items = this->items();
-    auto base = rand() % num_streams();
-    for (std::size_t j = 0; j < num_streams(); ++j) {
-      auto i = (base + j) % num_streams();
-      if (!items[i].second.test_and_set(std::memory_order_acquire))
-        return items[i].first;
-    }
-    unreachable();
+    unsigned i;
+    available.pop(i);
+    return items[i];
   }
 
   void releaseReactor(const Pipeline<T> &reactor) {
     if (num_streams() == 1)
       return;
     auto items = this->items();
-    for (std::size_t i = 0; i < num_streams(); ++i) {
-      if (&reactor == &items[i].first) {
-        items[i].second.clear(std::memory_order_release);
+    for (unsigned i = 0; i < num_streams(); ++i) {
+      if (&reactor == items + i) {
+        available.push(i);
         break;
       }
     }
@@ -91,10 +101,10 @@ public:
 };
 
 template <typename T> [[nodiscard]] Instance<T> *allocInstance(std::size_t num_streams) {
-  typedef typename Instance<T>::Item Item;
   constexpr std::size_t fr = sizeof(Instance<T>) + sizeof(num_streams);
-  static_assert((__STDCPP_DEFAULT_NEW_ALIGNMENT__ + fr) % alignof(Item) == 0, "unable to allocate instance with proper alignment");
-  auto p = static_cast<Instance<T> *>(::operator new(fr + sizeof(Item) * num_streams));
+  static_assert(__STDCPP_DEFAULT_NEW_ALIGNMENT__ % alignof(Pipeline<T>) == 0 && fr % alignof(Pipeline<T>) == 0,
+                "unable to allocate instance with proper alignment");
+  auto p = static_cast<Instance<T> *>(::operator new(fr + sizeof(Pipeline<T>) * num_streams));
   *reinterpret_cast<std::size_t *>(p + 1) = num_streams;
   return p;
 }
