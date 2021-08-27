@@ -59,11 +59,11 @@ protected:
 
     auto items = this->items();
     initPipeline(items, primaryPipelineArgs, std::index_sequence_for<Args1...>{});
-    available.unsynchronized_push(0);
+    available.push(0);
     for (unsigned i = 1; i < num_streams(); ++i) {
       initPipeline(items + i, std::tuple_cat(std::forward_as_tuple(firstReactor()), secondaryPipelineAdditionalArgs),
                    std::make_index_sequence<sizeof...(Args2) + 1>{});
-      available.unsynchronized_push(i);
+      available.push(i);
     }
   }
 
