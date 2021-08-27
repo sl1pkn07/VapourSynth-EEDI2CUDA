@@ -50,6 +50,11 @@ jobs:
     - name: Expand Boost
       run:  Expand-Archive boost.zip -DestinationPath .
       shell: pwsh
+    - name: Patch Boost
+      run: |
+        $file = 'boost\mp11\detail\mp_count.hpp'
+        (Get-Content $file) -replace '!BOOST_MP11_WORKAROUND\( BOOST_MP11_MSVC, \< 1930 \)','0' | Set-Content $file
+      shell: pwsh
     - name: Setup CUDA Env
       run: |
         echo "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2" >> $env:GITHUB_ENV
@@ -111,6 +116,11 @@ jobs:
           name: dep-boost
       - name: Expand Boost
         run: Expand-Archive boost.zip -DestinationPath .
+        shell: pwsh
+      - name: Patch Boost
+        run: |
+          $file = 'boost\mp11\detail\mp_count.hpp'
+          (Get-Content $file) -replace '!BOOST_MP11_WORKAROUND\( BOOST_MP11_MSVC, \< 1930 \)','0' | Set-Content $file
         shell: pwsh
       - name: Setup CUDA
         uses: Jimver/cuda-toolkit@v0.2.4
