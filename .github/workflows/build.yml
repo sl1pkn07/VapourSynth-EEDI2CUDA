@@ -11,12 +11,12 @@ jobs:
       uses: actions/cache@v2
       with:
         path: boost.zip
-        key: boost
+        key: boost-9f3ea5a
     - name: Checkout Boost
       uses: actions/checkout@v2
       with:
         repository: boostorg/boost
-        ref: dcea40897111fb7c4b92b17455e177d6d2bf735c
+        ref: 9f3ea5ad8ef54d28ecec52911c237d451757e66d
         submodules: recursive
       if: steps.cache-boost.outputs.cache-hit != 'true'
     - name: Build Boost
