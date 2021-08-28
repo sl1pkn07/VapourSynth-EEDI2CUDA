@@ -66,12 +66,12 @@ jobs:
       uses: actions/cache@v2
       with:
         path: ${{ env.CUDA_PATH }}
-        key: ${{ runner.os }}-cuda-2
+        key: ${{ runner.os }}-cuda
     - name: Setup CUDA
       uses: Jimver/cuda-toolkit@v0.2.4
       with:
         cuda: 11.2.2
-        sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+        sub-packages: '["nvcc", "cudart"]'
       if: steps.cache-cuda.outputs.cache-hit != 'true'
     - name: Setup MSVC
       uses: ilammy/msvc-dev-cmd@v1
@@ -106,66 +106,54 @@ jobs:
         shell: cmd
     needs: fetch-boost
     steps:
-    - name: Checkout repo
-      uses: actions/checkout@v2
-      with:
-        fetch-depth: 0
-    - name: Download Boost
-      uses: actions/download-artifact@v2
-      with:
-        name: dep-boost
-    - name: Expand Boost
-      run: Expand-Archive boost.zip -DestinationPath .
-      shell: pwsh
-    - name: Patch Boost
-      run: |
-        $file = 'boost\mp11\detail\mp_count.hpp'
-        (Get-Content $file) -replace '!BOOST_MP11_WORKAROUND\( BOOST_MP11_MSVC, \< 1930 \)','0' | Set-Content $file
-      shell: pwsh
-    - name: Setup CUDA Env
-      run: |
-        echo "CUDA_PATH=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2" >> $env:GITHUB_ENV
-        echo "CUDA_PATH_V11_2=C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v11.2" >> $env:GITHUB_ENV
-        echo "CUDA_PATH_VX_Y=CUDA_PATH_V11_2" >> $env:GITHUB_ENV
-      shell: pwsh
-    - name: Cache CUDA
-      id: cache-cuda
-      uses: actions/cache@v2
-      with:
-        path: ${{ env.CUDA_PATH }}
-        key: ${{ runner.os }}-cuda-2
-    - name: Setup CUDA
-      uses: Jimver/cuda-toolkit@v0.2.4
-      with:
-        cuda: 11.2.2
-        sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
-      if: steps.cache-cuda.outputs.cache-hit != 'true'
-    - name: Setup MSVC
-      uses: ilammy/msvc-dev-cmd@v1
-      with:
-        toolset: 14.25
-        arch: x64_x86
-    - name: Configure
-      run: |
-        mkdir build
-        cmake -S. -Bbuild -A Win32 -DBoost_INCLUDE_DIRS=%cd% -DCMAKE_BUILD_TYPE=Release -DENABLE_VAPOURSYNTH_API3_BINDING=OFF -DENABLE_VAPOURSYNTH_API4_BINDING=OFF
-    - name: Build
-      run: cmake --build build --config Release
-    - name: Archive
-      run: Compress-Archive EEDI2CUDA.dll -DestinationPath EEDI2CUDA-win32.zip
-      working-directory: build/Release
-      shell: pwsh
-    - name: Upload
-      uses: actions/upload-artifact@v2
-      with:
-        name: EEDI2CUDA-win32
-        path: build/Release/EEDI2CUDA.dll
-    - name: Release
-      uses: softprops/action-gh-release@v1
-      if: startsWith(github.ref, 'refs/tags/')
-      with:
-        files: build/Release/EEDI2CUDA-win32.zip
-        draft: true
+      - name: Checkout repo
+        uses: actions/checkout@v2
+        with:
+          fetch-depth: 0
+      - name: Download Boost
+        uses: actions/download-artifact@v2
+        with:
+          name: dep-boost
+      - name: Expand Boost
+        run: Expand-Archive boost.zip -DestinationPath .
+        shell: pwsh
+      - name: Patch Boost
+        run: |
+          $file = 'boost\mp11\detail\mp_count.hpp'
+          (Get-Content $file) -replace '!BOOST_MP11_WORKAROUND\( BOOST_MP11_MSVC, \< 1930 \)','0' | Set-Content $file
+        shell: pwsh
+      - name: Setup CUDA
+        uses: Jimver/cuda-toolkit@v0.2.4
+        with:
+          cuda: 11.2.2
+          sub-packages: '["nvcc", "cudart", "visual_studio_integration"]'
+        if: steps.cache-cuda.outputs.cache-hit != 'true'
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          toolset: 14.25
+          arch: x64_x86
+      - name: Configure
+        run: |
+          mkdir build
+          cmake -S. -Bbuild -A Win32 -DBoost_INCLUDE_DIRS=%cd% -DCMAKE_BUILD_TYPE=Release -DENABLE_VAPOURSYNTH_API3_BINDING=OFF -DENABLE_VAPOURSYNTH_API4_BINDING=OFF
+      - name: Build
+        run: cmake --build build --config Release
+      - name: Archive
+        run: Compress-Archive EEDI2CUDA.dll -DestinationPath EEDI2CUDA-win32.zip
+        working-directory: build/Release
+        shell: pwsh
+      - name: Upload
+        uses: actions/upload-artifact@v2
+        with:
+          name: EEDI2CUDA-win32
+          path: build/Release/EEDI2CUDA.dll
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: build/Release/EEDI2CUDA-win32.zip
+          draft: true
   build-linux:
     runs-on: ubuntu-20.04
     needs: fetch-boost
