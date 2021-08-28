@@ -158,9 +158,9 @@ template <typename T> struct Instance : public BaseInstance<T> {
 } // namespace
 
 class EEDI2Filter : public GenericVideoFilter {
-  union {
-    Instance<uint8_t> *u8;
-    Instance<uint16_t> *u16;
+  struct {
+    std::unique_ptr<Instance<uint8_t>> u8;
+    std::unique_ptr<Instance<uint16_t>> u16;
   } data;
 
 public:
@@ -203,11 +203,13 @@ EEDI2Filter::EEDI2Filter(std::string_view filterName, AVSValue args, IScriptEnvi
     int num_streams;
     numeric_cast_to(num_streams, args[args.ArraySize() - 2].AsInt(1));
     if (vi.BitsPerComponent() == 8) {
-      data.u8 = allocInstance<uint8_t>(num_streams);
-      new (data.u8) Instance<uint8_t>(filterName, args);
+      auto u8 = allocInstance<uint8_t>(num_streams);
+      new (u8) Instance<uint8_t>(filterName, args);
+      data.u8 = std::unique_ptr<Instance<uint8_t>>(u8);
     } else {
-      data.u16 = allocInstance<uint16_t>(num_streams);
-      new (data.u16) Instance<uint16_t>(filterName, args);
+      auto u16 = allocInstance<uint16_t>(num_streams);
+      new (u16) Instance<uint16_t>(filterName, args);
+      data.u16 = std::unique_ptr<Instance<uint16_t>>(u16);
     }
   } catch (const std::exception &exc) {
     env->ThrowError(("EEDI2CUDA: "s + exc.what()).c_str());
