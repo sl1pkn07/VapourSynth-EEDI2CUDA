@@ -28,10 +28,12 @@
 #include "instance.h"
 #include "pipeline.h"
 
-#if defined(__GNUC__) && __GNUC__ >= 4
-#define VISIBILITY __attribute__((visibility("default")))
+#if defined(_WIN32) /* Windows being special */
+#define AVS_EXTERNAL_API(ret) extern "C" __declspec(dllexport) ret __stdcall
+#elif defined(__GNUC__) && __GNUC__ >= 4
+#define AVS_EXTERNAL_API(ret) extern "C" __attribute__((visibility("default"))) ret __stdcall
 #else
-#define VISIBILITY
+#define AVS_EXTERNAL_API(ret) extern "C" ret __stdcall
 #endif
 
 static inline int getPlaneId(const VideoInfo &vi, int plane) {
@@ -229,7 +231,7 @@ AVSValue __cdecl EEDI2Filter::Create(AVSValue args, void *user_data, IScriptEnvi
 
 const AVS_Linkage *AVS_linkage{};
 
-extern "C" VISIBILITY __declspec(dllexport) const char *__stdcall AvisynthPluginInit3(IScriptEnvironment *env, const AVS_Linkage *const vectors) {
+AVS_EXTERNAL_API(const char *) AvisynthPluginInit3(IScriptEnvironment *env, const AVS_Linkage *const vectors) {
 
   auto to_voidp = [](auto *p) { return const_cast<void *>(static_cast<const void *>(p)); };
 
